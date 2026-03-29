@@ -1,9 +1,14 @@
 """
 biome.py — Python bindings for cubiomes (https://github.com/Cubitect/cubiomes)
 
-Provides fast Minecraft Java Edition biome lookup via the compiled
-cubiomes shared library.  Use BiomeGenerator to apply a seed and query
-the biome at any block or chunk coordinate.
+Provides fast Minecraft biome lookup via the compiled cubiomes shared library.
+Bedrock Edition and Java Edition share the same biome noise algorithm, so
+cubiomes results apply directly to Bedrock seeds.
+
+NOTE: Bastion Remnants and Nether Fortresses generate in the Nether; their
+      salt (30084232) is shared and no overworld biome check applies to them.
+      All other structures listed here are Overworld structures whose spawn
+      locations ARE gated by biome.
 """
 
 import ctypes
@@ -63,137 +68,259 @@ DIMENSIONS = {
 # Biome ID <-> name maps  (cubiomes/biomes.h enum BiomeID)
 # ---------------------------------------------------------------------------
 BIOME_IDS: dict[str, int] = {
-    # Classic biomes
-    "ocean":                           0,
-    "plains":                          1,
-    "desert":                          2,
-    "mountains":                       3,
-    "forest":                          4,
-    "taiga":                           5,
-    "swamp":                           6,
-    "river":                           7,
-    "nether_wastes":                   8,
-    "the_end":                         9,
-    "frozen_ocean":                    10,
-    "frozen_river":                    11,
-    "snowy_tundra":                    12,
-    "snowy_mountains":                 13,
-    "mushroom_fields":                 14,
-    "mushroom_field_shore":            15,
-    "beach":                           16,
-    "desert_hills":                    17,
-    "wooded_hills":                    18,
-    "taiga_hills":                     19,
-    "mountain_edge":                   20,
-    "jungle":                          21,
-    "jungle_hills":                    22,
-    "jungle_edge":                     23,
-    "deep_ocean":                      24,
-    "stone_shore":                     25,
-    "snowy_beach":                     26,
-    "birch_forest":                    27,
-    "birch_forest_hills":              28,
-    "dark_forest":                     29,
-    "snowy_taiga":                     30,
-    "snowy_taiga_hills":               31,
-    "giant_tree_taiga":                32,
-    "giant_tree_taiga_hills":          33,
-    "wooded_mountains":                34,
-    "savanna":                         35,
-    "savanna_plateau":                 36,
-    "badlands":                        37,
-    "wooded_badlands_plateau":         38,
-    "badlands_plateau":                39,
+    # Classic overworld
+    "ocean":                            0,
+    "plains":                           1,
+    "desert":                           2,
+    "mountains":                        3,
+    "forest":                           4,
+    "taiga":                            5,
+    "swamp":                            6,
+    "river":                            7,
+    "nether_wastes":                    8,
+    "the_end":                          9,
+    "frozen_ocean":                     10,
+    "frozen_river":                     11,
+    "snowy_tundra":                     12,
+    "snowy_mountains":                  13,
+    "mushroom_fields":                  14,
+    "mushroom_field_shore":             15,
+    "beach":                            16,
+    "desert_hills":                     17,
+    "wooded_hills":                     18,
+    "taiga_hills":                      19,
+    "mountain_edge":                    20,
+    "jungle":                           21,
+    "jungle_hills":                     22,
+    "jungle_edge":                      23,
+    "deep_ocean":                       24,
+    "stone_shore":                      25,
+    "snowy_beach":                      26,
+    "birch_forest":                     27,
+    "birch_forest_hills":               28,
+    "dark_forest":                      29,
+    "snowy_taiga":                      30,
+    "snowy_taiga_hills":                31,
+    "giant_tree_taiga":                 32,
+    "giant_tree_taiga_hills":           33,
+    "wooded_mountains":                 34,
+    "savanna":                          35,
+    "savanna_plateau":                  36,
+    "badlands":                         37,
+    "wooded_badlands_plateau":          38,
+    "badlands_plateau":                 39,
     # 1.13+
-    "small_end_islands":               40,
-    "end_midlands":                    41,
-    "end_highlands":                   42,
-    "end_barrens":                     43,
-    "warm_ocean":                      44,
-    "lukewarm_ocean":                  45,
-    "cold_ocean":                      46,
-    "deep_warm_ocean":                 47,
-    "deep_lukewarm_ocean":             48,
-    "deep_cold_ocean":                 49,
-    "deep_frozen_ocean":               50,
-    # Mutated variants (IDs 128+)
-    "sunflower_plains":                129,
-    "desert_lakes":                    130,
-    "gravelly_mountains":              131,
-    "flower_forest":                   132,
-    "taiga_mountains":                 133,
-    "swamp_hills":                     134,
-    "ice_spikes":                      140,
-    "modified_jungle":                 149,
-    "modified_jungle_edge":            151,
-    "tall_birch_forest":               155,
-    "tall_birch_hills":                156,
-    "dark_forest_hills":               157,
-    "snowy_taiga_mountains":           158,
-    "giant_spruce_taiga":              160,
-    "giant_spruce_taiga_hills":        161,
-    "modified_gravelly_mountains":     162,
-    "shattered_savanna":               163,
-    "shattered_savanna_plateau":       164,
-    "eroded_badlands":                 165,
+    "small_end_islands":                40,
+    "end_midlands":                     41,
+    "end_highlands":                    42,
+    "end_barrens":                      43,
+    "warm_ocean":                       44,
+    "lukewarm_ocean":                   45,
+    "cold_ocean":                       46,
+    "deep_warm_ocean":                  47,
+    "deep_lukewarm_ocean":              48,
+    "deep_cold_ocean":                  49,
+    "deep_frozen_ocean":                50,
+    # Mutated / rare variants (IDs 128+)
+    "sunflower_plains":                 129,
+    "desert_lakes":                     130,
+    "gravelly_mountains":               131,
+    "flower_forest":                    132,
+    "taiga_mountains":                  133,
+    "swamp_hills":                      134,
+    "ice_spikes":                       140,
+    "modified_jungle":                  149,
+    "modified_jungle_edge":             151,
+    "tall_birch_forest":                155,
+    "tall_birch_hills":                 156,
+    "dark_forest_hills":                157,
+    "snowy_taiga_mountains":            158,
+    "giant_spruce_taiga":               160,
+    "giant_spruce_taiga_hills":         161,
+    "modified_gravelly_mountains":      162,
+    "shattered_savanna":                163,
+    "shattered_savanna_plateau":        164,
+    "eroded_badlands":                  165,
     "modified_wooded_badlands_plateau": 166,
-    "modified_badlands_plateau":       167,
-    # 1.16 Nether
-    "soul_sand_valley":                170,
-    "crimson_forest":                  171,
-    "warped_forest":                   172,
-    "basalt_deltas":                   173,
-    # 1.18+ Overworld
-    "meadow":                          177,
-    "grove":                           178,
-    "snowy_slopes":                    179,
-    "jagged_peaks":                    180,
-    "frozen_peaks":                    181,
-    "stony_peaks":                     182,
-    "deep_dark":                       183,
-    "mangrove_swamp":                  184,
-    "cherry_grove":                    185,
+    "modified_badlands_plateau":        167,
+    # 1.16 Nether biomes
+    "soul_sand_valley":                 170,
+    "crimson_forest":                   171,
+    "warped_forest":                    172,
+    "basalt_deltas":                    173,
+    # 1.18+ Overworld additions
+    "meadow":                           177,
+    "grove":                            178,
+    "snowy_slopes":                     179,
+    "jagged_peaks":                     180,
+    "frozen_peaks":                     181,
+    "stony_peaks":                      182,
+    "deep_dark":                        183,
+    "mangrove_swamp":                   184,
+    "cherry_grove":                     185,
 }
 
-# Aliases — common alternative names users might type
+# Common alternate names users might type
 _ALIASES: dict[str, str] = {
-    "extreme_hills":       "mountains",
-    "mega_taiga":          "giant_tree_taiga",
-    "mega_taiga_hills":    "giant_tree_taiga_hills",
-    "roofed_forest":       "dark_forest",
-    "cold_taiga":          "snowy_taiga",
-    "cold_taiga_hills":    "snowy_taiga_hills",
-    "ice_plains":          "snowy_tundra",
-    "ice_mountains":       "snowy_mountains",
-    "mushroom_island":     "mushroom_fields",
-    "stone_beach":         "stone_shore",
-    "cold_beach":          "snowy_beach",
-    "mesa":                "badlands",
-    "mesa_plateau_f":      "wooded_badlands_plateau",
-    "mesa_plateau":        "badlands_plateau",
-    "hell":                "nether_wastes",
-    "sky":                 "the_end",
-    "nether":              "nether_wastes",
-    "deep_warm":           "deep_warm_ocean",
-    "deep_lukewarm":       "deep_lukewarm_ocean",
-    "deep_cold":           "deep_cold_ocean",
-    "deep_frozen":         "deep_frozen_ocean",
+    "extreme_hills":                "mountains",
+    "mega_taiga":                   "giant_tree_taiga",
+    "mega_taiga_hills":             "giant_tree_taiga_hills",
+    "roofed_forest":                "dark_forest",
+    "cold_taiga":                   "snowy_taiga",
+    "cold_taiga_hills":             "snowy_taiga_hills",
+    "ice_plains":                   "snowy_tundra",
+    "ice_mountains":                "snowy_mountains",
+    "mushroom_island":              "mushroom_fields",
+    "stone_beach":                  "stone_shore",
+    "cold_beach":                   "snowy_beach",
+    "mesa":                         "badlands",
+    "mesa_plateau_f":               "wooded_badlands_plateau",
+    "mesa_plateau":                 "badlands_plateau",
+    "hell":                         "nether_wastes",
+    "sky":                          "the_end",
+    "nether":                       "nether_wastes",
+    "deep_warm":                    "deep_warm_ocean",
+    "deep_lukewarm":                "deep_lukewarm_ocean",
+    "deep_cold":                    "deep_cold_ocean",
+    "deep_frozen":                  "deep_frozen_ocean",
+    "bamboo_jungle":                "modified_jungle",
 }
 
 BIOME_NAMES: dict[int, str] = {v: k for k, v in BIOME_IDS.items()}
+
+# ---------------------------------------------------------------------------
+# Structure → valid overworld biomes
+#
+# Each entry is a frozenset of biome IDs that allow the structure to spawn.
+# None means the structure has no biome restriction (generates anywhere).
+#
+# NOTE: bastion_fortress uses the Nether (same salt 30084232 for both).
+#       Biome noise does not gate them; they are excluded from this table.
+# ---------------------------------------------------------------------------
+STRUCTURE_VALID_BIOMES: dict[str, frozenset[int] | None] = {
+    # Village — plains, desert, savanna, taiga, snowy variants
+    "village": frozenset({
+        1,   # plains
+        2,   # desert
+        5,   # taiga
+        12,  # snowy_tundra
+        30,  # snowy_taiga
+        35,  # savanna
+        # mutated variants
+        129, # sunflower_plains
+        130, # desert_lakes
+        133, # taiga_mountains
+        140, # ice_spikes
+        158, # snowy_taiga_mountains
+        163, # shattered_savanna
+        # 1.18+ equivalents
+        177, # meadow
+        178, # grove
+        179, # snowy_slopes
+    }),
+
+    # Pillager Outpost — same base biomes as village (no snowy_taiga)
+    "pillager_outpost": frozenset({
+        1,   # plains
+        2,   # desert
+        5,   # taiga
+        12,  # snowy_tundra
+        35,  # savanna
+        129, # sunflower_plains
+        130, # desert_lakes
+        133, # taiga_mountains
+        163, # shattered_savanna
+        177, # meadow (1.18+)
+        178, # grove (1.18+)
+    }),
+
+    # Woodland Mansion — dark forest only
+    "woodland_mansion": frozenset({
+        29,  # dark_forest
+        157, # dark_forest_hills
+    }),
+
+    # Ocean Monument — deep ocean variants only
+    "ocean_monument": frozenset({
+        24,  # deep_ocean
+        47,  # deep_warm_ocean
+        48,  # deep_lukewarm_ocean
+        49,  # deep_cold_ocean
+        50,  # deep_frozen_ocean
+    }),
+
+    # Shipwreck — ocean and beach biomes
+    "shipwreck": frozenset({
+        0,   # ocean
+        10,  # frozen_ocean
+        16,  # beach
+        24,  # deep_ocean
+        26,  # snowy_beach
+        44,  # warm_ocean
+        45,  # lukewarm_ocean
+        46,  # cold_ocean
+        47,  # deep_warm_ocean
+        48,  # deep_lukewarm_ocean
+        49,  # deep_cold_ocean
+        50,  # deep_frozen_ocean
+    }),
+
+    # Desert Pyramid — desert biomes
+    "desert_pyramid": frozenset({
+        2,   # desert
+        17,  # desert_hills
+        130, # desert_lakes
+        165, # eroded_badlands
+    }),
+
+    # Jungle Temple — jungle biomes
+    "jungle_temple": frozenset({
+        21,  # jungle
+        22,  # jungle_hills
+        149, # modified_jungle  (bamboo jungle in 1.14+)
+    }),
+
+    # Swamp Hut — swamp only
+    "swamp_hut": frozenset({
+        6,   # swamp
+        134, # swamp_hills
+    }),
+
+    # Igloo — snowy biomes
+    "igloo": frozenset({
+        12,  # snowy_tundra
+        30,  # snowy_taiga
+    }),
+
+    # Ruined Portal — generates in any overworld biome, no restriction
+    "ruined_portal": None,
+}
+
+# Human-readable labels for the prompt
+STRUCTURE_LABELS: dict[str, str] = {
+    "village":          "Village               (salt 10387312,  spacing 34, sep 8,  linear 1)",
+    "pillager_outpost": "Pillager Outpost       (salt 165745296, spacing 80, sep 24, linear 1)",
+    "woodland_mansion": "Woodland Mansion       (salt 10387319,  spacing 80, sep 20, linear 1)",
+    "ocean_monument":   "Ocean Monument         (salt 10387313,  spacing 32, sep 5,  linear 1)",
+    "shipwreck":        "Shipwreck              (salt 165745295, spacing 24, sep 4,  linear 1)",
+    "desert_pyramid":   "Desert Pyramid         (salt 14357617,  spacing 32, sep 8,  linear 0)",
+    "jungle_temple":    "Jungle Temple          (salt 14357617,  spacing 32, sep 8,  linear 0)",
+    "swamp_hut":        "Swamp Hut              (salt 14357617,  spacing 32, sep 8,  linear 0)",
+    "igloo":            "Igloo                  (salt 14357617,  spacing 32, sep 8,  linear 0)",
+    "ruined_portal":    "Ruined Portal          (salt 40552231,  spacing 40, sep 15, linear 0) — no biome gate",
+}
 
 
 def resolve_biome_name(name: str) -> int | None:
     """Return biome ID for a name string, or None if not found.
     Accepts canonical names, aliases, and is case/space-insensitive."""
     key = name.strip().lower().replace(" ", "_").replace("-", "_")
-    # Try alias first
     key = _ALIASES.get(key, key)
     return BIOME_IDS.get(key)
 
 
 def list_biomes() -> str:
-    """Return a human-readable list of all known biome names."""
+    """Return a sorted, human-readable list of all known biome names."""
     return "\n".join(sorted(BIOME_IDS.keys()))
 
 
@@ -216,14 +343,13 @@ _lib.getBiomeAt.restype  = ctypes.c_int
 # ---------------------------------------------------------------------------
 class BiomeGenerator:
     """
-    Wraps a cubiomes Generator struct.  One instance per thread is sufficient
-    since apply_seed() is cheap; however the object is NOT thread-safe.
+    Wraps a cubiomes Generator struct.
 
     Usage::
 
         gen = BiomeGenerator(mc_version=MC_1_21, dim=DIM_OVERWORLD)
         gen.apply_seed(12345)
-        biome_id   = gen.get_biome(0, 64, 0)   # block coords x=0, y=64, z=0
+        biome_id   = gen.get_biome(0, 64, 0)
         biome_name = gen.biome_name(biome_id)
     """
 
@@ -237,29 +363,49 @@ class BiomeGenerator:
 
     def apply_seed(self, seed: int) -> None:
         """Apply a world seed (up to 64-bit)."""
-        _lib.applySeed(self._ptr, self.dim, ctypes.c_uint64(seed & 0xFFFFFFFFFFFFFFFF))
+        _lib.applySeed(self._ptr, self.dim,
+                       ctypes.c_uint64(seed & 0xFFFFFFFFFFFFFFFF))
 
-    def get_biome(self, x: int, y: int, z: int, scale: int = 1) -> int:
+    def get_biome(self, x: int, y: int, z: int, scale: int = 4) -> int:
         """
         Return the biome ID at position (x, y, z).
 
-        scale=1  → block coordinates (slower, exact)
-        scale=4  → biome/chunk coordinates (faster, ~4-block granularity)
+        scale=4  → biome/chunk coordinates (fast, ~4-block granularity) [default]
+        scale=1  → exact block coordinates (slower)
 
         For pre-1.18 (layer-based), y is ignored.
         For 1.18+ (noise-based), y matters; use 64 for sea-level surface.
+        When using scale=4 pass biome-coordinate values (block // 4).
         """
         return _lib.getBiomeAt(self._ptr, scale, x, y, z)
 
     def biome_name(self, biome_id: int) -> str:
-        """Return a human-readable name for a biome ID."""
         return BIOME_NAMES.get(biome_id, f"unknown({biome_id})")
+
+    def biome_at_block(self, bx: int, bz: int, by: int = 64) -> int:
+        """Get biome ID at block coordinates (converts to biome coords internally)."""
+        return self.get_biome(bx >> 2, by >> 2, bz >> 2, scale=4)
+
+    def check_structure_biome(self, bx: int, bz: int,
+                               valid_biomes: frozenset[int] | None,
+                               by: int = 64) -> tuple[bool, str]:
+        """
+        Check whether block position (bx, bz) is a valid biome for a structure.
+
+        Returns (passes, biome_name).
+        If valid_biomes is None the structure has no restriction → always passes.
+        """
+        bid = self.biome_at_block(bx, bz, by)
+        name = self.biome_name(bid)
+        if valid_biomes is None:
+            return True, name
+        return bid in valid_biomes, name
 
     def check_seed(self, seed: int,
                    requirements: list[tuple[int, int, int, set[int]]]
                    ) -> tuple[bool, list[tuple[int, int, str]]]:
         """
-        Apply *seed* and verify every biome requirement.
+        Apply *seed* and verify every custom biome requirement.
 
         requirements — list of (x, z, y, allowed_biome_id_set)
         Returns (all_passed, [(x, z, biome_name), ...])
@@ -268,7 +414,7 @@ class BiomeGenerator:
         results: list[tuple[int, int, str]] = []
         passed = True
         for x, z, y, allowed in requirements:
-            bid = self.get_biome(x, y, z)
+            bid = self.biome_at_block(x, z, y)
             name = self.biome_name(bid)
             if bid not in allowed:
                 passed = False
@@ -277,18 +423,55 @@ class BiomeGenerator:
 
 
 # ---------------------------------------------------------------------------
-# Interactive helper — collect biome requirements from the user
+# Interactive helpers
 # ---------------------------------------------------------------------------
+
+def prompt_structure_type() -> tuple[str, frozenset[int] | None] | None:
+    """
+    Ask the user which overworld structure they are searching for so the
+    scanner can verify that the biome at each found position actually allows
+    the structure to spawn.
+
+    Returns (structure_key, valid_biomes_frozenset_or_None), or None if skipped.
+    NOTE: bastion_fortress is excluded — it is a Nether structure.
+    """
+    print()
+    print("Structure biome validation — picks only positions where the")
+    print("structure would actually generate given the biome at that spot.")
+    print()
+    print("NOTE: Bastion Remnants and Nether Fortresses are Nether structures.")
+    print("      Their overworld RNG positions (salt 30084232) are found by the")
+    print("      scanner, but biome gating does NOT apply to them.  Skip this")
+    print("      step when searching for bastions or fortresses.")
+    print()
+    print("Overworld structures with biome gating:")
+    for key, label in STRUCTURE_LABELS.items():
+        print(f"  {key:<20} — {label}")
+    print()
+    choice = input("Structure type (leave blank to skip): ").strip().lower()
+    if not choice:
+        return None
+    choice = choice.replace(" ", "_").replace("-", "_")
+    if choice not in STRUCTURE_VALID_BIOMES:
+        print(f"  Unknown structure '{choice}' — skipping structure biome check.")
+        return None
+    valid = STRUCTURE_VALID_BIOMES[choice]
+    if valid is None:
+        print(f"  {choice} has no biome restriction — structure biome check skipped.")
+    else:
+        names = ", ".join(BIOME_NAMES.get(b, str(b)) for b in sorted(valid))
+        print(f"  Will require biome in: [{names}]")
+    return choice, valid
+
+
 def prompt_biome_requirements() -> tuple[int, int, list[tuple[int, int, int, set[int]]]] | None:
     """
-    Ask the user whether they want biome filtering, and if so, collect:
-      - MC version
-      - Dimension
-      - A list of (x, z, y, {allowed biome IDs})
+    Ask the user whether they want additional custom biome requirements
+    (beyond the automatic structure biome check).
 
     Returns (mc_version, dim, requirements) or None if skipped.
     """
-    ans = input("Enable biome filtering? (y/n) [n]: ").strip().lower()
+    ans = input("\nAdd custom biome requirements at specific coordinates? (y/n) [n]: ").strip().lower()
     if ans not in ("y", "yes"):
         return None
 
@@ -306,10 +489,10 @@ def prompt_biome_requirements() -> tuple[int, int, list[tuple[int, int, int, set
     print()
     print("Enter biome requirements one per line.")
     print("  Format:  <x> <z> <biome>[,<biome>...]")
-    print("  y-level defaults to 64 (sea level). Append it as 4th token to override.")
+    print("  y-level defaults to 64 (sea level). Append as 4th token to override.")
     print("  Example: 0 0 mushroom_fields")
     print("  Example: 100 -200 plains,forest,meadow")
-    print("  Example: 0 0 64 ocean          (explicit y)")
+    print("  Example: 0 64 0 ocean          (explicit y as 3rd token)")
     print("  Type 'list' to see all biome names.  Empty line to finish.")
     print()
 
@@ -329,7 +512,6 @@ def prompt_biome_requirements() -> tuple[int, int, list[tuple[int, int, int, set
         try:
             x = int(parts[0])
             z = int(parts[1])
-            # Optional explicit y
             if len(parts) >= 4:
                 y = int(parts[2])
                 biome_str = parts[3]
@@ -358,7 +540,7 @@ def prompt_biome_requirements() -> tuple[int, int, list[tuple[int, int, int, set
         idx += 1
 
     if not requirements:
-        print("  No requirements entered — biome filtering disabled.")
+        print("  No requirements entered — custom biome filtering disabled.")
         return None
 
     return mc_version, dim, requirements

@@ -31,7 +31,7 @@ def mt_twist(mt):
 
 @nb.njit(cache=True)
 def mt_extract(mt, idx):
-    if idx >= N:  # needs twist
+    if idx >= N:
         mt_twist(mt)
         idx = 0
     y = mt[idx]
@@ -70,14 +70,19 @@ def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation):
 print(
 """
 Minecraft Bedrock Edition — brute-force structural 48-bit seed searcher
-with optional Java Edition biome filtering via cubiomes.
+with biome generation via cubiomes.
 
-NOTE: Structure RNG uses Bedrock constants; biome generation uses the
-      Java Edition algorithm from cubiomes (same noise math, different edition).
-      Use biome results as a guide or when searching Java seeds.
+Bedrock and Java Edition share the same biome noise algorithm, so cubiomes
+biome results apply directly to Bedrock seeds.
+
+NOTE on Bastion Remnants and Nether Fortresses:
+  Both share RNG salt 30084232 (they cannot be distinguished by salt alone).
+  These are NETHER structures — overworld biome gating does NOT apply to them.
+  If you are searching for bastions or fortresses, skip the structure biome
+  validation step when prompted.
 
 RNG constants  (Format: Spacing, Separation, Salt, Linear Separation)
-  Bastion/Fortress:      30,  4, 30084232,  0
+  Bastion/Fortress:      30,  4, 30084232,  0   ← Nether; skip biome check
   Village:               34,  8, 10387312,  1
   Pillager Outpost:      80, 24, 165745296, 1
   Woodland Mansion:      80, 20, 10387319,  1
@@ -86,81 +91,129 @@ RNG constants  (Format: Spacing, Separation, Salt, Linear Separation)
   Ruined Portal:         40, 15, 40552231,  0
   Other Overworld:       32,  8, 14357617,  0
 
-Search radius:  app accepts a structure hit if its position is within this
-                many blocks of the origin on both axes.
-Min occurrence: how many of the 4 checked regions must have a hit (max 4).
+Search radius:   app accepts a structure hit if its position is within this
+                 many blocks of the origin on both axes.
+Min occurrence:  how many of the 4 checked regions must have a valid hit (max 4).
+                 With structure biome validation ON a hit only counts if the
+                 biome at the computed position allows the structure to spawn.
 """
 )
 
 
 def seedsearch():
-    seedstart  = int(input("SeedStart: "))
-    seedend    = int(input("SeedEnd: "))
-    spacing    = int(input("Spacing: "))
-    separation = int(input("Separation: "))
-    salt       = int(input("Salt: "))
-    linear_sep = bool(int(input("Linear separation: (0 or 1) ")))
-    radius     = int(input("Search radius: "))
-    occurence  = int(input("Min occurrence: "))
-    output_file = input("Output file name (default: seed_results.txt): ").strip() or "seed_results.txt"
+    seedstart   = int(input("SeedStart: "))
+    seedend     = int(input("SeedEnd: "))
+    spacing     = int(input("Spacing: "))
+    separation  = int(input("Separation: "))
+    salt        = int(input("Salt: "))
+    linear_sep  = bool(int(input("Linear separation: (0 or 1) ")))
+    radius      = int(input("Search radius: "))
+    occurence   = int(input("Min occurrence: "))
+    output_file = input("Output file name (default: seed_results.txt): ").strip() \
+                  or "seed_results.txt"
 
-    # --- optional biome filtering ---
-    print()
-    biome_cfg = bm.prompt_biome_requirements()
-    biome_gen = None
+    # ---- structure biome validation ----------------------------------------
+    struct_cfg = bm.prompt_structure_type()   # (key, valid_biomes|None) or None
+
+    # ---- custom biome requirements at arbitrary coordinates ----------------
+    biome_cfg = bm.prompt_biome_requirements()  # (mc, dim, reqs) or None
+
+    # ---- set up generator --------------------------------------------------
+    # Use the MC version from custom filter if given; otherwise default 1.21
     if biome_cfg is not None:
         mc_version, dim, biome_reqs = biome_cfg
-        biome_gen = bm.BiomeGenerator(mc_version=mc_version, dim=dim)
-        print(f"\nBiome filtering ON  (MC {[k for k,v in bm.MC_VERSIONS.items() if v==mc_version][0]}, "
-              f"{[k for k,v in bm.DIMENSIONS.items() if v==dim][0]})\n")
     else:
-        print("\nBiome filtering OFF\n")
+        mc_version, dim, biome_reqs = bm.MC_1_21, bm.DIM_OVERWORLD, []
 
+    biome_gen = None
+    if struct_cfg is not None or biome_reqs:
+        biome_gen = bm.BiomeGenerator(mc_version=mc_version, dim=dim)
+        ver_label = [k for k, v in bm.MC_VERSIONS.items() if v == mc_version][0]
+        dim_label = [k for k, v in bm.DIMENSIONS.items()  if v == dim][0]
+        print(f"\nBiome generator ready  (MC {ver_label}, {dim_label})")
+
+    struct_valid_biomes = struct_cfg[1] if struct_cfg is not None else None
+    struct_checking = struct_cfg is not None
+
+    print()
     times = time.time()
     seeds = range(seedstart, seedend)
 
     with open(output_file, 'w') as f:
         f.write(f"# Seed search results — {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"# Range [{seedstart}, {seedend})  spacing={spacing} separation={separation} "
-                f"salt={salt} linear={int(linear_sep)}\n")
+        f.write(f"# Range [{seedstart}, {seedend})  spacing={spacing} "
+                f"separation={separation} salt={salt} linear={int(linear_sep)}\n")
         f.write(f"# Radius={radius}  min_occurrence={occurence}\n")
-        if biome_gen:
-            f.write(f"# Biome filter: {biome_reqs}\n")
+        if struct_cfg is not None:
+            f.write(f"# Structure biome check: {struct_cfg[0]}\n")
+        if biome_reqs:
+            f.write(f"# Custom biome requirements: {biome_reqs}\n")
         f.write("\n")
 
         for seed in seeds:
-            found = 0
-            i = getpos(seed, 0,  0,  spacing, separation, salt, linear_sep)
-            if -radius < i[0] < radius and -radius < i[1] < radius:
-                found += 1
-            if found < 1 and occurence >= 4:
+
+            # --- compute the 4 candidate positions --------------------------
+            i = getpos(seed,  0,  0, spacing, separation, salt, linear_sep)
+            j = getpos(seed, -1,  0, spacing, separation, salt, linear_sep)
+            k = getpos(seed,  0, -1, spacing, separation, salt, linear_sep)
+            l = getpos(seed, -1, -1, spacing, separation, salt, linear_sep)
+
+            # --- radius filter (fast, no biome lookup yet) ------------------
+            i_in = -radius < i[0] < radius and -radius < i[1] < radius
+            j_in = -radius < j[0] < radius and -radius < j[1] < radius
+            k_in = -radius < k[0] < radius and -radius < k[1] < radius
+            l_in = -radius < l[0] < radius and -radius < l[1] < radius
+
+            if i_in + j_in + k_in + l_in < occurence:
                 continue
 
-            j = getpos(seed, -1,  0, spacing, separation, salt, linear_sep)
-            if -radius < j[0] < radius and -radius < j[1] < radius:
-                found += 1
+            # --- structure biome check per position -------------------------
+            # A position only counts as "found" if it is in radius AND the
+            # biome at that block coordinate allows the structure to spawn.
+            pos_biome_names = {}   # (bx,bz) -> biome name for output
+            if struct_checking and biome_gen is not None:
+                biome_gen.apply_seed(seed)
+                def valid_pos(pos, in_radius):
+                    if not in_radius:
+                        return False
+                    ok, bname = biome_gen.check_structure_biome(
+                        pos[0], pos[1], struct_valid_biomes)
+                    pos_biome_names[pos] = bname
+                    return ok
 
-            k = getpos(seed,  0, -1, spacing, separation, salt, linear_sep)
-            if -radius < k[0] < radius and -radius < k[1] < radius:
-                found += 1
-
-            l = getpos(seed, -1, -1, spacing, separation, salt, linear_sep)
-            if -radius < l[0] < radius and -radius < l[1] < radius:
-                found += 1
+                i_ok = valid_pos(i, i_in)
+                j_ok = valid_pos(j, j_in)
+                k_ok = valid_pos(k, k_in)
+                l_ok = valid_pos(l, l_in)
+                found = i_ok + j_ok + k_ok + l_ok
+            else:
+                found = i_in + j_in + k_in + l_in
 
             if found < occurence:
                 continue
 
-            # --- biome check (only for seeds that pass structure filter) ---
-            biome_info = ""
-            if biome_gen is not None:
-                passed, biome_results = biome_gen.check_seed(seed, biome_reqs)
+            # --- custom biome requirements at arbitrary coordinates ---------
+            if biome_reqs:
+                if biome_gen is not None and not struct_checking:
+                    biome_gen.apply_seed(seed)
+                passed, custom_results = biome_gen.check_seed(seed, biome_reqs)
                 if not passed:
                     continue
-                parts = [f"({x},{z})={name}" for x, z, name in biome_results]
-                biome_info = "  biomes: " + ", ".join(parts)
+                custom_info = "  custom_biomes:[" + \
+                    ", ".join(f"({x},{z})={name}" for x, z, name in custom_results) + "]"
+            else:
+                custom_info = ""
 
-            line = f"Seed {seed}: {i} {j} {k} {l}{biome_info}"
+            # --- build biome annotation for each position in range ----------
+            pos_parts = []
+            for pos, in_rad in [(i, i_in), (j, j_in), (k, k_in), (l, l_in)]:
+                if in_rad and pos in pos_biome_names:
+                    pos_parts.append(f"{pos}[{pos_biome_names[pos]}]")
+                else:
+                    pos_parts.append(str(pos))
+            pos_str = " ".join(pos_parts)
+
+            line = f"Seed {seed}: {pos_str}{custom_info}"
             f.write(line + "\n")
 
             if seed % 1_000_000 == 0 and seed != seedstart:
