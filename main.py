@@ -75,14 +75,8 @@ with biome generation via cubiomes.
 Bedrock and Java Edition share the same biome noise algorithm, so cubiomes
 biome results apply directly to Bedrock seeds.
 
-NOTE on Bastion Remnants and Nether Fortresses:
-  Both share RNG salt 30084232 (they cannot be distinguished by salt alone).
-  These are NETHER structures — overworld biome gating does NOT apply to them.
-  If you are searching for bastions or fortresses, skip the structure biome
-  validation step when prompted.
-
 RNG constants  (Format: Spacing, Separation, Salt, Linear Separation)
-  Bastion/Fortress:      30,  4, 30084232,  0   ← Nether; skip biome check
+  Bastion/Fortress:      30,  4, 30084232,  0
   Village:               34,  8, 10387312,  1
   Pillager Outpost:      80, 24, 165745296, 1
   Woodland Mansion:      80, 20, 10387319,  1
@@ -115,25 +109,32 @@ def seedsearch():
     # ---- structure biome validation ----------------------------------------
     struct_cfg = bm.prompt_structure_type()   # (key, valid_biomes|None) or None
 
-    # ---- custom biome requirements at arbitrary coordinates ----------------
-    biome_cfg = bm.prompt_biome_requirements()  # (mc, dim, reqs) or None
+    # ---- custom biome restriction at candidate positions -------------------
+    biome_cfg = bm.prompt_biome_requirements()  # (mc_version, frozenset) or None
+
+    # ---- compute the effective biome set to check per candidate position ---
+    # A position counts as "found" only if its biome is in effective_biomes.
+    # effective_biomes = intersection of structure valid biomes and custom biomes
+    # (whichever are specified; None means no restriction from that source).
+    struct_valid  = struct_cfg[1] if struct_cfg is not None else None
+    custom_biomes = biome_cfg[1]  if biome_cfg  is not None else None
+
+    if struct_valid is not None and custom_biomes is not None:
+        effective_biomes = struct_valid & custom_biomes   # both must be satisfied
+    elif struct_valid is not None:
+        effective_biomes = struct_valid
+    elif custom_biomes is not None:
+        effective_biomes = custom_biomes
+    else:
+        effective_biomes = None   # no biome restriction
 
     # ---- set up generator --------------------------------------------------
-    # Use the MC version from custom filter if given; otherwise default 1.21
-    if biome_cfg is not None:
-        mc_version, dim, biome_reqs = biome_cfg
-    else:
-        mc_version, dim, biome_reqs = bm.MC_1_21, bm.DIM_OVERWORLD, []
-
-    biome_gen = None
-    if struct_cfg is not None or biome_reqs:
-        biome_gen = bm.BiomeGenerator(mc_version=mc_version, dim=dim)
+    mc_version = biome_cfg[0] if biome_cfg is not None else bm.MC_1_21
+    biome_gen  = None
+    if effective_biomes is not None or struct_cfg is not None:
+        biome_gen = bm.BiomeGenerator(mc_version=mc_version, dim=bm.DIM_OVERWORLD)
         ver_label = [k for k, v in bm.MC_VERSIONS.items() if v == mc_version][0]
-        dim_label = [k for k, v in bm.DIMENSIONS.items()  if v == dim][0]
-        print(f"\nBiome generator ready  (MC {ver_label}, {dim_label})")
-
-    struct_valid_biomes = struct_cfg[1] if struct_cfg is not None else None
-    struct_checking = struct_cfg is not None
+        print(f"\nBiome generator ready  (MC {ver_label}, overworld)")
 
     print()
     times = time.time()
@@ -146,8 +147,9 @@ def seedsearch():
         f.write(f"# Radius={radius}  min_occurrence={occurence}\n")
         if struct_cfg is not None:
             f.write(f"# Structure biome check: {struct_cfg[0]}\n")
-        if biome_reqs:
-            f.write(f"# Custom biome requirements: {biome_reqs}\n")
+        if custom_biomes is not None:
+            labels = ", ".join(bm.BIOME_NAMES.get(b, str(b)) for b in sorted(custom_biomes))
+            f.write(f"# Custom biome requirement at candidate positions: [{labels}]\n")
         f.write("\n")
 
         for seed in seeds:
@@ -167,44 +169,29 @@ def seedsearch():
             if i_in + j_in + k_in + l_in < occurence:
                 continue
 
-            # --- structure biome check per position -------------------------
-            # A position only counts as "found" if it is in radius AND the
-            # biome at that block coordinate allows the structure to spawn.
-            pos_biome_names = {}   # (bx,bz) -> biome name for output
-            if struct_checking and biome_gen is not None:
-                biome_gen.apply_seed(seed)
-                def valid_pos(pos, in_radius):
-                    if not in_radius:
-                        return False
-                    ok, bname = biome_gen.check_structure_biome(
-                        pos[0], pos[1], struct_valid_biomes)
-                    pos_biome_names[pos] = bname
-                    return ok
+            # --- biome check per candidate position -------------------------
+            # A position counts as "found" only when it is in radius AND its
+            # biome is in effective_biomes (structure valid ∩ custom, if set).
+            pos_biome_names: dict[tuple, str] = {}
 
-                i_ok = valid_pos(i, i_in)
-                j_ok = valid_pos(j, j_in)
-                k_ok = valid_pos(k, k_in)
-                l_ok = valid_pos(l, l_in)
-                found = i_ok + j_ok + k_ok + l_ok
+            if biome_gen is not None and effective_biomes is not None:
+                biome_gen.apply_seed(seed)
+                found = 0
+                for pos, in_rad in [(i, i_in), (j, j_in), (k, k_in), (l, l_in)]:
+                    if not in_rad:
+                        continue
+                    bid   = biome_gen.biome_at_block(pos[0], pos[1])
+                    bname = biome_gen.biome_name(bid)
+                    pos_biome_names[pos] = bname
+                    if bid in effective_biomes:
+                        found += 1
             else:
                 found = i_in + j_in + k_in + l_in
 
             if found < occurence:
                 continue
 
-            # --- custom biome requirements at arbitrary coordinates ---------
-            if biome_reqs:
-                if biome_gen is not None and not struct_checking:
-                    biome_gen.apply_seed(seed)
-                passed, custom_results = biome_gen.check_seed(seed, biome_reqs)
-                if not passed:
-                    continue
-                custom_info = "  custom_biomes:[" + \
-                    ", ".join(f"({x},{z})={name}" for x, z, name in custom_results) + "]"
-            else:
-                custom_info = ""
-
-            # --- build biome annotation for each position in range ----------
+            # --- build output line with biome annotations -------------------
             pos_parts = []
             for pos, in_rad in [(i, i_in), (j, j_in), (k, k_in), (l, l_in)]:
                 if in_rad and pos in pos_biome_names:
@@ -213,7 +200,7 @@ def seedsearch():
                     pos_parts.append(str(pos))
             pos_str = " ".join(pos_parts)
 
-            line = f"Seed {seed}: {pos_str}{custom_info}"
+            line = f"Seed {seed}: {pos_str}"
             f.write(line + "\n")
 
             if seed % 1_000_000 == 0 and seed != seedstart:

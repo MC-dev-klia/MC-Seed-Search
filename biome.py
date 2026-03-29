@@ -439,11 +439,6 @@ def prompt_structure_type() -> tuple[str, frozenset[int] | None] | None:
     print("Structure biome validation — picks only positions where the")
     print("structure would actually generate given the biome at that spot.")
     print()
-    print("NOTE: Bastion Remnants and Nether Fortresses are Nether structures.")
-    print("      Their overworld RNG positions (salt 30084232) are found by the")
-    print("      scanner, but biome gating does NOT apply to them.  Skip this")
-    print("      step when searching for bastions or fortresses.")
-    print()
     print("Overworld structures with biome gating:")
     for key, label in STRUCTURE_LABELS.items():
         print(f"  {key:<20} — {label}")
@@ -464,14 +459,17 @@ def prompt_structure_type() -> tuple[str, frozenset[int] | None] | None:
     return choice, valid
 
 
-def prompt_biome_requirements() -> tuple[int, int, list[tuple[int, int, int, set[int]]]] | None:
+def prompt_biome_requirements() -> tuple[int, frozenset[int]] | None:
     """
-    Ask the user whether they want additional custom biome requirements
-    (beyond the automatic structure biome check).
+    Ask the user whether they want to restrict which biome the structure
+    candidate positions must be in, beyond the structure's own valid biome list.
 
-    Returns (mc_version, dim, requirements) or None if skipped.
+    The biome check is performed at each computed candidate position (the block
+    coordinates returned by getpos), not at any fixed coordinate.
+
+    Returns (mc_version, allowed_biome_ids) or None if skipped.
     """
-    ans = input("\nAdd custom biome requirements at specific coordinates? (y/n) [n]: ").strip().lower()
+    ans = input("\nRequire specific biome(s) at structure candidate positions? (y/n) [n]: ").strip().lower()
     if ans not in ("y", "yes"):
         return None
 
@@ -482,47 +480,23 @@ def prompt_biome_requirements() -> tuple[int, int, list[tuple[int, int, int, set
         print(f"  Unknown version '{ver_str}', defaulting to 1.21")
         mc_version = MC_1_21
 
-    print("Dimension: overworld / nether / end")
-    dim_str = input("Dimension [overworld]: ").strip().lower() or "overworld"
-    dim = DIMENSIONS.get(dim_str, DIM_OVERWORLD)
-
     print()
-    print("Enter biome requirements one per line.")
-    print("  Format:  <x> <z> <biome>[,<biome>...]")
-    print("  y-level defaults to 64 (sea level). Append as 4th token to override.")
-    print("  Example: 0 0 mushroom_fields")
-    print("  Example: 100 -200 plains,forest,meadow")
-    print("  Example: 0 64 0 ocean          (explicit y as 3rd token)")
-    print("  Type 'list' to see all biome names.  Empty line to finish.")
+    print("Enter the biome(s) that must appear at each counted structure position.")
+    print("  Separate multiple biomes with commas — any one of them will satisfy the check.")
+    print("  Example: plains")
+    print("  Example: plains,sunflower_plains,meadow")
+    print("  Type 'list' to see all biome names.")
     print()
 
-    requirements: list[tuple[int, int, int, set[int]]] = []
-    idx = 1
     while True:
-        raw = input(f"Requirement {idx}: ").strip()
-        if not raw:
-            break
+        raw = input("Required biome(s): ").strip()
         if raw.lower() == "list":
             print(list_biomes())
             continue
-        parts = raw.split()
-        if len(parts) < 3:
-            print("  Need at least: x z biome_name")
-            continue
-        try:
-            x = int(parts[0])
-            z = int(parts[1])
-            if len(parts) >= 4:
-                y = int(parts[2])
-                biome_str = parts[3]
-            else:
-                y = 64
-                biome_str = parts[2]
-        except ValueError:
-            print("  x, z (and optional y) must be integers.")
-            continue
-
-        biome_names_raw = [b.strip() for b in biome_str.split(",")]
+        if not raw:
+            print("  No biomes entered — custom biome filtering disabled.")
+            return None
+        biome_names_raw = [b.strip() for b in raw.split(",")]
         allowed: set[int] = set()
         bad = []
         for bn in biome_names_raw:
@@ -534,13 +508,6 @@ def prompt_biome_requirements() -> tuple[int, int, list[tuple[int, int, int, set
         if bad:
             print(f"  Unknown biome(s): {', '.join(bad)}.  Type 'list' to see valid names.")
             continue
-        requirements.append((x, z, y, allowed))
-        biome_labels = ", ".join(BIOME_NAMES.get(b, str(b)) for b in allowed)
-        print(f"  Added: ({x}, {z}, y={y}) must be one of [{biome_labels}]")
-        idx += 1
-
-    if not requirements:
-        print("  No requirements entered — custom biome filtering disabled.")
-        return None
-
-    return mc_version, dim, requirements
+        labels = ", ".join(BIOME_NAMES.get(b, str(b)) for b in sorted(allowed))
+        print(f"  Structure positions must be in: [{labels}]")
+        return mc_version, frozenset(allowed)
