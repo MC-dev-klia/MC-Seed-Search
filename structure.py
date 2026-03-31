@@ -60,31 +60,25 @@ def mt_extract(mt, idx):
 def _scan_batch(seeds_start, seeds_end, spacing, separation, salt,
                 linear_sep, radius, occurence):
     """
-    Optimised batch scanner.
+    Optimised batch scanner — three speedups over the naive version:
 
-    Speedups over the naive version:
     1. Parallel execution via nb.prange (one thread per CPU core).
-    2. Scalar rolling MT — instead of allocating a partial array of M+4
-       uint32s and indexing into it, we unroll the init recurrence with a
-       single rolling scalar variable and capture only the 4-9 values
-       actually needed for the twist+temper.  This eliminates the 1604-byte
-       per-seed stack array and lets the compiler keep all intermediate
-       values in registers.
-    3. Adaptive loop length — when linear_sep is False we only need indices
-       0,1,2 and M,M+1, so the rolling loop stops at M+1 instead of M+3.
-    4. Dual early-exit — break as soon as (a) found >= occ (already won) or
-       (b) found + remaining_regions < occ (can't possibly win).
-    5. Two-phase gather — parallel mark pass then sequential collect,
-       avoiding any shared-counter race conditions.
+    2. Partial MT: only initialise indices 0‥M+3 (401 elements) instead of
+       the full 624, then do a targeted twist for only the 2–4 values needed.
+       Saves ~3× the arithmetic per region vs. a full 624-element twist.
+    3. Unrolled inline twist+temper — no extra array, no function-call overhead.
+
+    Output is collected with a two-phase approach: a parallel boolean mark pass,
+    then a sequential gather, avoiding any shared-counter race conditions.
     """
     spawn_range  = spacing - separation
     n            = seeds_end - seeds_start
     R_X          = np.int64(341873128712)
     R_Z          = np.int64(132897987541)
     MULT         = np.int64(0x6c078965)
-    MATRIX_A_    = np.uint32(0x9908b0df)
-    UPPER_MASK_  = np.uint32(0x80000000)
-    LOWER_MASK_  = np.uint32(0x7fffffff)
+    MATRIX_A     = np.uint32(0x9908b0df)
+    UPPER_MASK   = np.uint32(0x80000000)
+    LOWER_MASK   = np.uint32(0x7fffffff)
     T1           = np.uint32(0x9D2C5680)
     T2           = np.uint32(0xEFC60000)
     sr           = np.int64(spawn_range)
@@ -99,86 +93,64 @@ def _scan_batch(seeds_start, seeds_end, spacing, separation, salt,
         world_seed = np.int64(seeds_start) + np.int64(ii)
         found      = np.int32(0)
 
+        # Single partial-MT buffer reused for all 4 regions of this seed.
+        # Indices 0‥M+3 (= 0‥400) are sufficient to compute the first 4
+        # twisted+tempered values (the MT twist at position i reads mt[i],
+        # mt[i+1], and mt[M+i] from the *un-twisted* initialised state).
+        mt = np.empty(M + 4, dtype=np.uint32)
+
         for region in range(4):
             rx = np.int64(-(region & 1))
             rz = np.int64(-((region >> 1) & 1))
 
-            # 32-bit seed for this region
+            # Seed for this region (lower 32 bits only)
             s32 = np.uint32(world_seed + rx * R_X + rz * R_Z + np.int64(salt))
 
-            # ------------------------------------------------------------------
-            # Scalar rolling MT initialisation.
-            #
-            # Instead of filling an array mt[0..M+3] and then reading back
-            # just 4-9 slots, we keep a single rolling variable p and capture
-            # only the indices actually needed for the twist+temper:
-            #   a0 = mt[0], a1 = mt[1], a2 = mt[2]        (always)
-            #   a3 = mt[3], a4 = mt[4]                     (linear_sep only)
-            #   b0 = mt[M], b1 = mt[M+1]                   (always)
-            #   b2 = mt[M+2], b3 = mt[M+3]                 (linear_sep only)
-            # ------------------------------------------------------------------
-            p  = s32
-            a0 = p
-            p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(1)) & np.int64(0xFFFFFFFF))
-            a1 = p
-            p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(2)) & np.int64(0xFFFFFFFF))
-            a2 = p
+            # Partial MT initialisation: indices 0 to M+3
+            mt[0] = s32
+            for k in range(1, M + 4):
+                p    = mt[k - 1]
+                mt[k] = np.uint32(
+                    (MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(k))
+                    & np.int64(0xFFFFFFFF)
+                )
+
+            # --- Inline twist+temper for index 0 ---
+            y  = (mt[0] & UPPER_MASK) | (mt[1] & LOWER_MASK)
+            v0 = mt[M] ^ (y >> np.uint32(1))
+            if y & np.uint32(1):
+                v0 ^= MATRIX_A
+            v0 ^= v0 >> np.uint32(11)
+            v0 ^= (v0 << np.uint32(7))  & T1
+            v0 ^= (v0 << np.uint32(15)) & T2
+            v0 ^= v0 >> np.uint32(18)
+
+            # --- Inline twist+temper for index 1 ---
+            y  = (mt[1] & UPPER_MASK) | (mt[2] & LOWER_MASK)
+            v1 = mt[M + 1] ^ (y >> np.uint32(1))
+            if y & np.uint32(1):
+                v1 ^= MATRIX_A
+            v1 ^= v1 >> np.uint32(11)
+            v1 ^= (v1 << np.uint32(7))  & T1
+            v1 ^= (v1 << np.uint32(15)) & T2
+            v1 ^= v1 >> np.uint32(18)
 
             if linear_sep:
-                p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(3)) & np.int64(0xFFFFFFFF))
-                a3 = p
-                p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(4)) & np.int64(0xFFFFFFFF))
-                a4 = p
-
-                # Roll indices 5 .. M-1 (discarding intermediate values)
-                for k in range(np.int64(5), np.int64(M)):
-                    p = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + k) & np.int64(0xFFFFFFFF))
-
-                # Capture b0..b3
-                p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(M))     & np.int64(0xFFFFFFFF))
-                b0 = p
-                p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(M + 1)) & np.int64(0xFFFFFFFF))
-                b1 = p
-                p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(M + 2)) & np.int64(0xFFFFFFFF))
-                b2 = p
-                p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(M + 3)) & np.int64(0xFFFFFFFF))
-                b3 = p
-
-                # --- Twist+temper index 0 ---
-                y  = (a0 & UPPER_MASK_) | (a1 & LOWER_MASK_)
-                v0 = b0 ^ (y >> np.uint32(1))
+                # --- Inline twist+temper for index 2 ---
+                y  = (mt[2] & UPPER_MASK) | (mt[3] & LOWER_MASK)
+                v2 = mt[M + 2] ^ (y >> np.uint32(1))
                 if y & np.uint32(1):
-                    v0 ^= MATRIX_A_
-                v0 ^= v0 >> np.uint32(11)
-                v0 ^= (v0 << np.uint32(7))  & T1
-                v0 ^= (v0 << np.uint32(15)) & T2
-                v0 ^= v0 >> np.uint32(18)
-
-                # --- Twist+temper index 1 ---
-                y  = (a1 & UPPER_MASK_) | (a2 & LOWER_MASK_)
-                v1 = b1 ^ (y >> np.uint32(1))
-                if y & np.uint32(1):
-                    v1 ^= MATRIX_A_
-                v1 ^= v1 >> np.uint32(11)
-                v1 ^= (v1 << np.uint32(7))  & T1
-                v1 ^= (v1 << np.uint32(15)) & T2
-                v1 ^= v1 >> np.uint32(18)
-
-                # --- Twist+temper index 2 ---
-                y  = (a2 & UPPER_MASK_) | (a3 & LOWER_MASK_)
-                v2 = b2 ^ (y >> np.uint32(1))
-                if y & np.uint32(1):
-                    v2 ^= MATRIX_A_
+                    v2 ^= MATRIX_A
                 v2 ^= v2 >> np.uint32(11)
                 v2 ^= (v2 << np.uint32(7))  & T1
                 v2 ^= (v2 << np.uint32(15)) & T2
                 v2 ^= v2 >> np.uint32(18)
 
-                # --- Twist+temper index 3 ---
-                y  = (a3 & UPPER_MASK_) | (a4 & LOWER_MASK_)
-                v3 = b3 ^ (y >> np.uint32(1))
+                # --- Inline twist+temper for index 3 ---
+                y  = (mt[3] & UPPER_MASK) | (mt[4] & LOWER_MASK)
+                v3 = mt[M + 3] ^ (y >> np.uint32(1))
                 if y & np.uint32(1):
-                    v3 ^= MATRIX_A_
+                    v3 ^= MATRIX_A
                 v3 ^= v3 >> np.uint32(11)
                 v3 ^= (v3 << np.uint32(7))  & T1
                 v3 ^= (v3 << np.uint32(15)) & T2
@@ -186,38 +158,7 @@ def _scan_batch(seeds_start, seeds_end, spacing, separation, salt,
 
                 off_x = (np.int64(v0) % sr + np.int64(v1) % sr) // np.int64(2)
                 off_z = (np.int64(v2) % sr + np.int64(v3) % sr) // np.int64(2)
-
             else:
-                # Roll indices 3 .. M-1 (two fewer iterations than linear_sep)
-                for k in range(np.int64(3), np.int64(M)):
-                    p = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + k) & np.int64(0xFFFFFFFF))
-
-                # Capture b0..b1 only
-                p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(M))     & np.int64(0xFFFFFFFF))
-                b0 = p
-                p  = np.uint32((MULT * np.int64(p ^ (p >> np.uint32(30))) + np.int64(M + 1)) & np.int64(0xFFFFFFFF))
-                b1 = p
-
-                # --- Twist+temper index 0 ---
-                y  = (a0 & UPPER_MASK_) | (a1 & LOWER_MASK_)
-                v0 = b0 ^ (y >> np.uint32(1))
-                if y & np.uint32(1):
-                    v0 ^= MATRIX_A_
-                v0 ^= v0 >> np.uint32(11)
-                v0 ^= (v0 << np.uint32(7))  & T1
-                v0 ^= (v0 << np.uint32(15)) & T2
-                v0 ^= v0 >> np.uint32(18)
-
-                # --- Twist+temper index 1 ---
-                y  = (a1 & UPPER_MASK_) | (a2 & LOWER_MASK_)
-                v1 = b1 ^ (y >> np.uint32(1))
-                if y & np.uint32(1):
-                    v1 ^= MATRIX_A_
-                v1 ^= v1 >> np.uint32(11)
-                v1 ^= (v1 << np.uint32(7))  & T1
-                v1 ^= (v1 << np.uint32(15)) & T2
-                v1 ^= v1 >> np.uint32(18)
-
                 off_x = np.int64(v0) % sr
                 off_z = np.int64(v1) % sr
 
@@ -227,8 +168,8 @@ def _scan_batch(seeds_start, seeds_end, spacing, separation, salt,
             if -rad < bx < rad and -rad < bz < rad:
                 found += np.int32(1)
 
-            # Early exit — already satisfied, or can't reach occ any more
-            if found >= occ or found + np.int32(3 - region) < occ:
+            # Early exit: remaining regions can't reach occurence
+            if found + np.int32(3 - region) < occ:
                 break
 
         if found >= occ:
