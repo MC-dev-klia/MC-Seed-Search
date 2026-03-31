@@ -130,6 +130,15 @@ def seedsearch():
 
         for s48 in range(seedstart, seedend):
 
+            # periodic progress — must be before any continue so it always fires
+            if s48 % 1_000_000 == 0 and s48 != seedstart:
+                elapsed = time.time() - times
+                prog = f"[Progress] scanned up to {s48}  elapsed={elapsed:.1f}s"
+                print(prog, flush=True)
+                if not to_console and f:
+                    f.write(prog + "\n")
+                    f.flush()
+
             # ------------------------------------------------------------------
             # Structure check — uses the 48-bit seed (top bits don't affect it)
             # ------------------------------------------------------------------
@@ -190,15 +199,6 @@ def seedsearch():
 
                 if found >= occurence:
                     emit(format_result(s48, positions_in_radius, pos_biome), f)
-
-            # periodic progress to stdout
-            if s48 % 1_000_000 == 0 and s48 != seedstart:
-                elapsed = time.time() - times
-                prog = f"[Progress] scanned up to {s48}  elapsed={elapsed:.1f}s"
-                print(prog, flush=True)
-                if not to_console and f:
-                    f.write(prog + "\n")
-                    f.flush()
 
         elapsed = time.time() - times
         emit(f"\n# Finished scanning.  Time: {elapsed:.2f}s", f)
