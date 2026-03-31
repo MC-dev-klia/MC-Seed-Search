@@ -205,29 +205,35 @@ def seedsearch():
         """
         Check biome validity at a structure position.
 
-        With corner_check=True also samples the four corners of the containing
-        chunk — all 5 points must be in effective_biomes.  Always returns the
-        biome name at the structure position itself for display purposes.
+        The structure position itself is always checked first — it is the
+        cheapest single-point query and the most likely to fail for rare
+        biomes.  When it fails we return immediately without paying for any
+        corner calls.  When corner_check=True and the structure point passes,
+        we then check the four chunk-corner points.
 
         Returns (passes: bool, biome_name: str).
         """
         bx, bz = pos
+
+        # --- Structure position (fast first gate) ---
+        struct_bid = gen.biome_at_block(bx, bz)
+        name = gen.biome_name(struct_bid)
+        if struct_bid not in effective_biomes:
+            return False, name          # early exit — skip corner work
+
+        # --- Optional 4-corner check (only reached if structure point passed) ---
         if corner_check:
-            cx0 = bx - offx      # chunk-origin X  (block coords)
-            cz0 = bz - offy      # chunk-origin Z
-            check_pts = [
-                (cx0,      cz0),
-                (cx0 + 16, cz0),
-                (cx0,      cz0 + 16),
-                (cx0 + 16, cz0 + 16),
-                (bx,       bz),  # structure position itself
-            ]
-            all_ok = all(gen.biome_at_block(px, pz) in effective_biomes
-                         for px, pz in check_pts)
-        else:
-            all_ok = gen.biome_at_block(bx, bz) in effective_biomes
-        name = gen.biome_name(gen.biome_at_block(bx, bz))
-        return all_ok, name
+            cx0 = bx - offx            # chunk-origin X (block coords)
+            cz0 = bz - offy            # chunk-origin Z
+            if not (
+                gen.biome_at_block(cx0,      cz0)      in effective_biomes
+                and gen.biome_at_block(cx0 + 16, cz0)      in effective_biomes
+                and gen.biome_at_block(cx0,      cz0 + 16) in effective_biomes
+                and gen.biome_at_block(cx0 + 16, cz0 + 16) in effective_biomes
+            ):
+                return False, name
+
+        return True, name
 
     # ---- main scan loop ----------------------------------------------------
     def run(f=None):
