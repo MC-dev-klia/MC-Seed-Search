@@ -100,6 +100,18 @@ def seedsearch():
     radius     = int(input("Search radius: "))
     occurence  = int(input("Min occurrence: "))
 
+    # ---- chunk offset -------------------------------------------------------
+    print()
+    print("Structure chunk offset (default 8, 8 — chunk centre).")
+    raw_offx = input("  Offset X [8]: ").strip()
+    raw_offy = input("  Offset Z [8]: ").strip()
+    offx = int(raw_offx) if raw_offx else 8
+    offy = int(raw_offy) if raw_offy else 8
+    if offx != 8 or offy != 8:
+        print(f"  Using offset ({offx}, {offy}).")
+    else:
+        print(f"  Using default offset (8, 8).")
+
     # ---- output destination ------------------------------------------------
     print()
     out_raw = input("Output to (f)ile or (c)onsole? ").strip().lower()
@@ -118,6 +130,19 @@ def seedsearch():
     if effective_biomes is not None:
         biome_gen = bm.BiomeGenerator(mc_version=bm.MC_1_21, dim=bm.DIM_OVERWORLD)
         print("  Biome generator ready (MC 1.21, overworld).")
+
+    # ---- 4-corner biome check -----------------------------------------------
+    corner_check = False
+    if effective_biomes is not None:
+        print()
+        ans_c = input(
+            "Enable 4-corner biome check? (y/n) [n]\n"
+            "  Checks 4 chunk corners + structure position (5 points total).\n"
+            "  All must be valid — slower but avoids false positives near biome edges.\n"
+            "  (y/n) [n]: "
+        ).strip().lower()
+        corner_check = ans_c in ("y", "yes")
+        print("  4-corner biome check ON." if corner_check else "  4-corner biome check OFF.")
 
     # ---- 48-bit structure + 16-bit biome expansion mode --------------------
     # Structure positions only depend on the lower 48 bits of the seed.
@@ -147,10 +172,12 @@ def seedsearch():
         f"# Range [{seedstart}, {seedend})  spacing={spacing} "
         f"separation={separation} salt={salt} linear={int(linear_sep)}\n"
         f"# Radius={radius}  min_occurrence={occurence}"
+        f"  offset=({offx},{offy})"
     )
     if effective_biomes is not None:
         labels = ", ".join(bm.BIOME_NAMES.get(b, str(b)) for b in sorted(effective_biomes))
         header += f"\n# Biome filter: [{labels}]"
+        header += f"  corner_check={corner_check}"
 
     # ---- helpers -----------------------------------------------------------
     def emit(line, f=None):
@@ -172,6 +199,35 @@ def seedsearch():
             else:
                 parts.append(f"{str(pos)}".ljust(10))
         return f"Seed {seed_out}: {' '.join(parts)}"
+
+    # ---- biome helper (captures corner_check / offx / offy from outer scope) -
+    def biome_passes(gen, pos):
+        """
+        Check biome validity at a structure position.
+
+        With corner_check=True also samples the four corners of the containing
+        chunk — all 5 points must be in effective_biomes.  Always returns the
+        biome name at the structure position itself for display purposes.
+
+        Returns (passes: bool, biome_name: str).
+        """
+        bx, bz = pos
+        if corner_check:
+            cx0 = bx - offx      # chunk-origin X  (block coords)
+            cz0 = bz - offy      # chunk-origin Z
+            check_pts = [
+                (cx0,      cz0),
+                (cx0 + 16, cz0),
+                (cx0,      cz0 + 16),
+                (cx0 + 16, cz0 + 16),
+                (bx,       bz),  # structure position itself
+            ]
+            all_ok = all(gen.biome_at_block(px, pz) in effective_biomes
+                         for px, pz in check_pts)
+        else:
+            all_ok = gen.biome_at_block(bx, bz) in effective_biomes
+        name = gen.biome_name(gen.biome_at_block(bx, bz))
+        return all_ok, name
 
     # ---- main scan loop ----------------------------------------------------
     def run(f=None):
@@ -202,10 +258,10 @@ def seedsearch():
             for seed_val_raw in hits:
                 s48 = int(seed_val_raw)
 
-                pi = getpos(s48,  0,  0, spacing, separation, salt, linear_sep)
-                pj = getpos(s48, -1,  0, spacing, separation, salt, linear_sep)
-                pk = getpos(s48,  0, -1, spacing, separation, salt, linear_sep)
-                pl = getpos(s48, -1, -1, spacing, separation, salt, linear_sep)
+                pi = getpos(s48,  0,  0, spacing, separation, salt, linear_sep, offx, offy)
+                pj = getpos(s48, -1,  0, spacing, separation, salt, linear_sep, offx, offy)
+                pk = getpos(s48,  0, -1, spacing, separation, salt, linear_sep, offx, offy)
+                pl = getpos(s48, -1, -1, spacing, separation, salt, linear_sep, offx, offy)
 
                 i_in = -radius < pi[0] < radius and -radius < pi[1] < radius
                 j_in = -radius < pj[0] < radius and -radius < pj[1] < radius
@@ -225,10 +281,9 @@ def seedsearch():
                         for pos, in_rad in positions_in_radius:
                             if not in_rad:
                                 continue
-                            bid  = biome_gen.biome_at_block(pos[0], pos[1])
-                            name = biome_gen.biome_name(bid)
+                            ok, name = biome_passes(biome_gen, pos)
                             pos_biome[pos] = name
-                            if bid in effective_biomes:
+                            if ok:
                                 found += 1
 
                         if found >= occurence:
@@ -244,10 +299,9 @@ def seedsearch():
                         for pos, in_rad in positions_in_radius:
                             if not in_rad:
                                 continue
-                            bid  = biome_gen.biome_at_block(pos[0], pos[1])
-                            name = biome_gen.biome_name(bid)
+                            ok, name = biome_passes(biome_gen, pos)
                             pos_biome[pos] = name
-                            if bid in effective_biomes:
+                            if ok:
                                 found += 1
                     else:
                         found = i_in + j_in + k_in + l_in

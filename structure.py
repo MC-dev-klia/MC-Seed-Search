@@ -313,7 +313,8 @@ def scan_batch(seeds_start, seeds_end, spacing, separation, salt,
     return _scan_batch_standard(*args)
 
 
-def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation):
+def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation,
+           offx=8, offy=8):
     """
     Return the block-level (x, z) position of a structure candidate in
     region (rx, rz) for the given world seed and structure RNG constants.
@@ -326,6 +327,8 @@ def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation):
     separation       : minimum separation in chunks
     salt             : structure-specific RNG salt
     linear_separation: if True uses the averaged two-draw algorithm
+    offx, offy       : intra-chunk block offset added to the chunk origin
+                       (default 8 = chunk centre, Bedrock's standard placement)
     """
     spawn_range = spacing - separation
     mixed  = (world_seed + rx * 341873128712 + rz * 132897987541 + salt) & ((1 << 64) - 1)
@@ -347,4 +350,4 @@ def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation):
 
     chunk_x = rx * spacing + off_x
     chunk_z = rz * spacing + off_z
-    return (chunk_x * 16 + 8, chunk_z * 16 + 8)
+    return (chunk_x * 16 + offx, chunk_z * 16 + offy)
