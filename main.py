@@ -34,72 +34,6 @@ Min occurrence:  how many of the 4 checked regions must have a valid hit (max 4)
 
 MASK48 = (1 << 48) - 1
 
-# ---------------------------------------------------------------------------
-# Structure presets  (spacing, separation, salt, linear_sep)
-# Keys are lower-case; multiple aliases map to the same tuple.
-# ---------------------------------------------------------------------------
-PRESETS = {
-    # Bastion / Fortress
-    "bastion":           (30,  4, 30084232,  False),
-    "fortress":          (30,  4, 30084232,  False),
-    "bastion/fortress":  (30,  4, 30084232,  False),
-    # Village
-    "village":           (34,  8, 10387312,  True),
-    # Pillager Outpost
-    "pillager":          (80, 24, 165745296, True),
-    "outpost":           (80, 24, 165745296, True),
-    "pillager outpost":  (80, 24, 165745296, True),
-    # Woodland Mansion
-    "mansion":           (80, 20, 10387319,  True),
-    "woodland mansion":  (80, 20, 10387319,  True),
-    # Ocean Monument
-    "monument":          (32,  5, 10387313,  True),
-    "ocean monument":    (32,  5, 10387313,  True),
-    # Shipwreck
-    "shipwreck":         (24,  4, 165745295, False),
-    # Ruined Portal
-    "ruined portal":     (40, 15, 40552231,  False),
-    "portal":            (40, 15, 40552231,  False),
-    # Temples (Desert/Jungle/Witch Hut — biome-dependent)
-    "temple":            (32,  8, 14357617,  False),
-    "temples":           (32,  8, 14357617,  False),
-}
-
-
-PRESET_DISPLAY = [
-    "bastion/fortress", "village", "outpost", "mansion",
-    "monument", "shipwreck", "portal", "temple",
-]
-
-
-def _prompt_structure_constants():
-    """
-    Ask the user for structure RNG constants.
-
-    They can type a preset name (e.g. "village") to fill all four values
-    automatically, or press Enter (blank) to enter each value manually.
-    Returns (spacing, separation, salt, linear_sep).
-    """
-    print("\nAvailable presets:")
-    print("  " + ", ".join(PRESET_DISPLAY))
-    print("  (type a preset name above, or press Enter to enter values manually)\n")
-
-    raw = input("Structure preset (or Enter to skip): ").strip().lower()
-    if raw and raw in PRESETS:
-        sp, sep, salt, ls = PRESETS[raw]
-        print(f"  Loaded preset '{raw}': spacing={sp}, separation={sep}, "
-              f"salt={salt}, linear_sep={int(ls)}")
-        return sp, sep, salt, ls
-
-    if raw and raw not in PRESETS:
-        print(f"  Unknown preset '{raw}' — entering values manually.")
-
-    spacing    = int(input("Spacing: "))
-    separation = int(input("Separation: "))
-    salt       = int(input("Salt: "))
-    linear_sep = bool(int(input("Linear separation: (0 or 1) ")))
-    return spacing, separation, salt, linear_sep
-
 
 def seedsearch():
     print(BANNER)
@@ -107,7 +41,10 @@ def seedsearch():
     # ---- search parameters -------------------------------------------------
     seedstart  = int(input("SeedStart: "))
     seedend    = int(input("SeedEnd: "))
-    spacing, separation, salt, linear_sep = _prompt_structure_constants()
+    spacing    = int(input("Spacing: "))
+    separation = int(input("Separation: "))
+    salt       = int(input("Salt: "))
+    linear_sep = bool(int(input("Linear separation: (0 or 1) ")))
     radius     = int(input("Search radius: "))
     occurence  = int(input("Min occurrence: "))
 
@@ -195,7 +132,7 @@ def seedsearch():
         print("Ready — starting scan.\n", flush=True)
 
         times = time.time()
-        BATCH = 10_000_000
+        BATCH = 25_000_000
         s = seedstart
 
         while s < seedend:
