@@ -83,10 +83,6 @@ PRESET_NAMES = [
 # ---------------------------------------------------------------------------
 
 def _prompt_rng():
-    """
-    Ask for structure RNG constants via a named preset or manual entry.
-    Returns (spacing, separation, salt, linear_sep, label).
-    """
     print()
     print("  Available presets:")
     print("    " + ", ".join(PRESET_NAMES))
@@ -106,25 +102,12 @@ def _prompt_rng():
     return sp, sep, sa, ls, f"{sp}/{sep}/{sa}"
 
 
-def _prompt_bounds(spacing):
-    """
-    Ask for the search bounding box.
-
-    Modes
-    -----
-    (r)adius   — symmetric ±N blocks from origin → box (-N,-N) to (N,N).
-    (b)ox      — explicit x1 z1 x2 z2 (space-separated, inclusive).
-    (c)losest  — preset for the closest possible spawn to origin:
-                 x1=z1 = -16 - 16*spacing - error, x2=z2 = error.
-                 error defaults to 0 (exact tight bound).
-
-    Returns (x1, z1, x2, z2) with x1 ≤ x2 and z1 ≤ z2.
-    """
+def _prompt_bounds(seperation):
     print("  Search bounds:")
     print("    (r)adius   — ±N blocks symmetric around origin")
     print("    (b)ox      — custom x1 z1 x2 z2")
     print(f"    (c)losest  — closest-possible preset  "
-          f"[-16-16*spacing-error, error]  (spacing={spacing})")
+          f"[-16-16*seperation-error, error]  (seperation={seperation})")
     ch = input("    Mode [r]: ").strip().lower() or "r"
 
     if ch in ("r", "radius"):
@@ -134,7 +117,7 @@ def _prompt_bounds(spacing):
     if ch in ("c", "closest"):
         raw_e = input("    Error margin [0]: ").strip()
         e = int(raw_e) if raw_e else 0
-        x1 = z1 = -16 - 16 * spacing - e
+        x1 = z1 = -16 - 16 * seperation - e
         x2 = z2 = e
         print(f"    Closest preset → ({x1},{z1}) to ({x2},{z2})")
         return x1, z1, x2, z2
@@ -148,14 +131,9 @@ def _prompt_bounds(spacing):
 
 
 def _prompt_structure_constraint(idx):
-    """
-    Prompt for all parameters of a single structure constraint.
-
-    Returns (constraint_dict, needs_biome_gen).
-    """
     print(f"\n=== Structure Constraint {idx} ===")
     sp, sep, sa, ls, label = _prompt_rng()
-    x1, z1, x2, z2 = _prompt_bounds(sp)
+    x1, z1, x2, z2 = _prompt_bounds(sep)
 
     occ_raw = input("  Min occurrence [1]: ").strip()
     occ = int(occ_raw) if occ_raw else 1
@@ -238,15 +216,6 @@ def _prompt_biome_constraint(idx):
 # ---------------------------------------------------------------------------
 
 def _check_struct_positions(s48, c):
-    """
-    Compute the block positions of the structure candidate in all four adjacent
-    regions for the 48-bit seed s48, then test each against the constraint's
-    bounding box.
-
-    Returns (positions, found) where positions is a list of (pos, in_box) for
-    each of the four regions (0,0), (-1,0), (0,-1), (-1,-1), and found is the
-    number of in-box positions.
-    """
     positions = []
     found = 0
     for rx, rz in ((0, 0), (-1, 0), (0, -1), (-1, -1)):
@@ -262,13 +231,6 @@ def _check_struct_positions(s48, c):
 
 
 def _biome_passes(gen, pos, biomes, corner_check, offx, offy):
-    """
-    Check biome validity at a structure candidate position.
-
-    The structure position itself is queried first (cheapest gate).  Only if
-    that passes and corner_check is True are the four chunk-corner points also
-    tested.  Returns (ok, biome_name_at_pos).
-    """
     bx, bz = pos
     bid  = gen.biome_at_block(bx, bz)
     name = gen.biome_name(bid)
@@ -288,16 +250,6 @@ def _biome_passes(gen, pos, biomes, corner_check, offx, offy):
 
 
 def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
-    """
-    Verify all biome requirements for the current seed.
-    gen must have apply_seed() already called with the correct seed.
-
-    Returns (ok, per_struct_biome, per_biome_names).
-      per_struct_biome[i]  — {pos: name} dict for struct constraint i,
-                             or None if that constraint has no biome filter.
-      per_biome_names[i]   — biome name string for biome constraint i.
-    Returns (False, None, None) as soon as any check fails.
-    """
     per_struct = []
     for i, c in enumerate(struct_constraints):
         if c["biomes"] is None:
@@ -345,13 +297,6 @@ def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
 
 def _format_result(seed_out, struct_constraints, all_positions,
                    biome_constraints, per_struct_biome, per_biome_names):
-    """
-    Build the output line(s) for one matching seed.
-
-    Single structure constraint with no biome-point constraints → compact
-    single-line format (backward-compatible with existing output).
-    Multiple constraints → one header line + indented detail lines.
-    """
     n_struct = len(struct_constraints)
     n_biome  = len(biome_constraints)
 
