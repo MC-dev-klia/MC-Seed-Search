@@ -806,6 +806,10 @@ def seedsearch():
         with open(output_file, "w") as f:
             run(f)
 
+    # ---- wait for user before exiting (for console output) -----------------
+    print("\nScan complete. Press Enter to exit...")
+    input()
+
 
 if __name__ == "__main__":
     seedsearch()
