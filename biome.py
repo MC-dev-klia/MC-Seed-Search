@@ -278,6 +278,37 @@ STRUCTURE_VALID_BIOMES: dict[str, frozenset[int] | None] = {
     "ruined_portal": None,
 }
 
+# Aliases for structure preset lookups (maps alternate names to canonical names)
+STRUCTURE_ALIASES: dict[str, str] = {
+    # Bastion/Fortress aliases (no biome gate, not in STRUCTURE_VALID_BIOMES)
+    "bastion_remnant": None,
+    "nether_fortress": None,
+    
+    # Pillager Outpost aliases
+    "pillager_post": "pillager_outpost",
+    
+    # Woodland Mansion aliases
+    "dark_forest_mansion": "woodland_mansion",
+    
+    # Ocean Monument aliases
+    "guardian_temple": "ocean_monument",
+    
+    # Shipwreck aliases
+    "wreck": "shipwreck",
+    "ship": "shipwreck",
+    
+    # Ruined Portal aliases
+    "ruined": "ruined_portal",
+    
+    # Temple structure aliases (maps to their canonical names)
+    "desert_temple": "desert_pyramid",
+    "pyramid": "desert_pyramid",
+    "jungle_pyramid": "jungle_temple",
+    "witch_hut": "swamp_hut",
+    "swamp": "swamp_hut",
+    "ice_house": "igloo",
+}
+
 # Human-readable labels for the prompt
 STRUCTURE_LABELS: dict[str, str] = {
     "village":          "Village               (salt 10387312,  spacing 34, sep 8,  linear 1)",
@@ -443,14 +474,22 @@ def prompt_biome_validation() -> frozenset[int] | None:
 
         key = raw.replace(" ", "_").replace("-", "_")
 
+        # Check if it is an alias, resolve to canonical name
+        canonical_key = STRUCTURE_ALIASES.get(key, key)
+
+        # Handle special case: None means no biome gate (bastion/fortress)
+        if canonical_key is None:
+            print(f"  {key} has no biome restriction — filter skipped.")
+            return None
+
         # Check if it is a structure name
-        if key in STRUCTURE_VALID_BIOMES:
-            valid = STRUCTURE_VALID_BIOMES[key]
+        if canonical_key in STRUCTURE_VALID_BIOMES:
+            valid = STRUCTURE_VALID_BIOMES[canonical_key]
             if valid is None:
-                print(f"  {key} has no biome restriction — filter skipped.")
+                print(f"  {canonical_key} has no biome restriction — filter skipped.")
                 return None
             names = ", ".join(BIOME_NAMES.get(b, str(b)) for b in sorted(valid))
-            print(f"  Using preset for {key}: [{names}]")
+            print(f"  Using preset for {canonical_key}: [{names}]")
             return valid
 
         # Otherwise treat as comma-separated biome names

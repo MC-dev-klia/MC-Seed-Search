@@ -22,6 +22,7 @@ Ordering for performance
 
 import sys
 import time
+import re
 import biome as bm
 from structure import getpos, scan_batch
 
@@ -32,44 +33,96 @@ SIGN_BIT = 1 << 63
 TWO64    = 1 << 64
 
 BANNER = """
-Minecraft brute-force seed searcher designed for bedrock edition structures.
+Minecraft brute-force seed searcher designed for bedrock edition structures using cubiomes as refernce.
+Supports many options such as multiple structure constraints, biome checks, and special options for speedup.
 
-RNG constants  (Format: Spacing, Separation, Salt, Linear Separation)
-  Bastion/Fortress:      30,  4, 30084232,  0
-  Village:               34,  8, 10387312,  1
-  Pillager Outpost:      80, 24, 165745296, 1
-  Woodland Mansion:      80, 20, 10387319,  1
-  Ocean Monument:        32,  5, 10387313,  1
-  Shipwreck:             24,  4, 165745295, 0
-  Ruined Portal:         40, 15, 40552231,  0
-  Temples (dependant on biome):       32,  8, 14357617,  0
+Usage: Run the scripts and follow the prompts for your desired constraints and options.
+
+Inputs:
+1 - Seed range: Specify the start and end of the seed range to search. Start is inclusive, end is exclusive.
+2 - Output destination: Choose to print results to the console or save them to a file.
+3 - Constraints: Define one or more structure constraints (with presets available) and biome point constraints.
+    3a - Structure type: Specify structure type to fill (spacing, separation, salt, linear separation)
+    3b - Bounds: Define search bounds for structure positions (radius, box, or closest preset), or positions for each quadrant.
+    3c - Occurrence: Minimum number of quadrants that must contain the structure.
+    3d - Offsets: Optional chunk offsets for structure position calculation accuracy.
+    3e - Biome filters: Optionally specify allowed biomes for each quadrant of the structure
+        3e.1 - Independent biome filters: Allow different biome sets for each quadrant.
+        3e.2 - Corner check: If enabled, also check the biome at the 4 chunk corners around each structure position.
+4 - Expand-16 mode: If biome checks are needed, optionally enable a mode that scans 65535 seeds with same structural positions for biome matching.
+
+Additional notes:
+Biomes are taken from java biomes, mostly accurate but may differ in edge biomes.
+Biome checks are not supported for nether or end structures, as the biome generator doesn't match.
+This finder only checks the first four quadrants.
+Some biome RNG constants are not availible as presets, so you will need to find them manually.
+Use trusted refernce sources like https://www.chunkbase.com/apps/seed-map to verify for false positives.
+Other additional structure generator checks are not implemented, such as checking y-level.
+Certain order of constraints may be faster than others, so experiment with different arrangements if you need to optimize for speed.
+Only checking certain quadrants may be faster than checking all quadrants.
+Structure positions only occur every 16 blocks based on the offset, so if (0,0) is possible, then (1,0) is not possible, but (16,0) is possible.
+Certain constrants may be impossible to satisfy, in certain cases the program will warn you.
 """
-
 REGION_ORDER  = [(0, 0), (-1, 0), (0, -1), (-1, -1)]
 REGION_LABELS = {
-    (0,  0):  "( 0, 0) [+X +Z]",
-    (-1, 0):  "(-1, 0) [-X +Z]",
-    (0, -1):  "( 0,-1) [+X -Z]",
-    (-1,-1):  "(-1,-1) [-X -Z]",
+    (0,  0):  "[+X +Z]",
+    (-1, 0):  "[-X +Z]",
+    (0, -1):  "[+X -Z]",
+    (-1,-1):  "[-X -Z]",
 }
 
 PRESETS = {
+    # Bastion Remnants / Nether Fortress
     "bastion":          (30,  4, 30084232,  False),
+    "bastion remnant":  (30,  4, 30084232,  False),
     "fortress":         (30,  4, 30084232,  False),
+    "nether fortress":  (30,  4, 30084232,  False),
     "bastion/fortress": (30,  4, 30084232,  False),
+    
+    # Village
     "village":          (34,  8, 10387312,  True),
+    
+    # Pillager Outpost
     "pillager":         (80, 24, 165745296, True),
     "outpost":          (80, 24, 165745296, True),
     "pillager outpost": (80, 24, 165745296, True),
+    "pillager post":    (80, 24, 165745296, True),
+    
+    # Woodland Mansion
     "mansion":          (80, 20, 10387319,  True),
     "woodland mansion": (80, 20, 10387319,  True),
+    "dark forest mansion": (80, 20, 10387319,  True),
+    
+    # Ocean Monument
     "monument":         (32,  5, 10387313,  True),
     "ocean monument":   (32,  5, 10387313,  True),
+    "guardian temple":  (32,  5, 10387313,  True),
+    
+    # Shipwreck
     "shipwreck":        (24,  4, 165745295, False),
+    "wreck":            (24,  4, 165745295, False),
+    "ship":             (24,  4, 165745295, False),
+    
+    # Ruined Portal
     "portal":           (40, 15, 40552231,  False),
     "ruined portal":    (40, 15, 40552231,  False),
+    "ruined":           (40, 15, 40552231,  False),
+    
+    # Temples (Desert Pyramid, Jungle Temple, Swamp Hut, Igloo)
     "temple":           (32,  8, 14357617,  False),
     "temples":          (32,  8, 14357617,  False),
+    "desert pyramid":   (32,  8, 14357617,  False),
+    "desert temple":    (32,  8, 14357617,  False),
+    "desert":           (32,  8, 14357617,  False),
+    "pyramid":          (32,  8, 14357617,  False),
+    "jungle temple":    (32,  8, 14357617,  False),
+    "jungle pyramid":   (32,  8, 14357617,  False),
+    "jungle":           (32,  8, 14357617,  False),
+    "swamp hut":        (32,  8, 14357617,  False),
+    "witch hut":        (32,  8, 14357617,  False),
+    "swamp":            (32,  8, 14357617,  False),
+    "igloo":            (32,  8, 14357617,  False),
+    "ice house":        (32,  8, 14357617,  False),
 }
 
 PRESET_NAMES = [
@@ -133,10 +186,86 @@ def _prompt_bounds(seperation):
 def _prompt_structure_constraint(idx):
     print(f"\n=== Structure Constraint {idx} ===")
     sp, sep, sa, ls, label = _prompt_rng()
-    x1, z1, x2, z2 = _prompt_bounds(sep)
+
+    specific_quadrants = None
+    specific_positions = None
+    x1 = z1 = x2 = z2 = None
 
     occ_raw = input("  Min occurrence [1]: ").strip()
     occ = int(occ_raw) if occ_raw else 1
+
+    if occ < 4:
+        ans = input(
+            "  Specify specific quadrants and positions? (y/n) [n]\n"
+            "    Allows choosing which quadrants to check and custom positions\n"
+            "    for each structure instance.\n"
+            "    (y/n) [n]: "
+        ).strip().lower()
+        if ans in ("y", "yes"):
+            print("  Quadrants: (0,0)=[+X +Z], (-1,0)=[-X +Z], (0,-1)=[+X -Z], (-1,-1)=[-X -Z]")
+            quad_input = input("  Quadrants to check (comma-separated, e.g. (0,0),(-1,0)) [all]: ").strip()
+            if quad_input:
+                try:
+                    specific_quadrants = []
+                    for match in re.finditer(r'\(\s*(\-?\d+)\s*,\s*(\-?\d+)\s*\)', quad_input):
+                        rx = int(match.group(1))
+                        rz = int(match.group(2))
+                        specific_quadrants.append((rx, rz))
+                    if not specific_quadrants:
+                        raise ValueError("No valid quadrants found")
+                except:
+                    print("  Invalid quadrant format — using all quadrants.")
+                    specific_quadrants = None
+            else:
+                specific_quadrants = None
+
+            if specific_quadrants:
+                specific_positions = {}
+                for rx, rz in specific_quadrants:
+                    pos_input = input(
+                        f"  Positions for quadrant ({rx},{rz}) (point list like x1,z1 x2,z2 or range x1,z1-x2,z2) [auto]: "
+                    ).strip()
+                    if pos_input:
+                        try:
+                            # Range format: x1,z1-x2,z2
+                            m = re.match(r"^\s*\(?\s*(-?\d+)\s*[ ,]\s*(-?\d+)\s*\)?\s*-\s*\(?\s*(-?\d+)\s*[ ,]\s*(-?\d+)\s*\)?\s*$", pos_input)
+                            if m:
+                                x1r, z1r, x2r, z2r = map(int, m.groups())
+                                if x1r > x2r:
+                                    x1r, x2r = x2r, x1r
+                                if z1r > z2r:
+                                    z1r, z2r = z2r, z1r
+                                specific_positions[(rx, rz)] = (x1r, z1r, x2r, z2r)
+                            else:
+                                # Point list form: 100,200 300,400 OR 100 200 ...
+                                coords = [int(tok) for tok in re.split(r"[\s,]+", pos_input.strip()) if tok]
+                                if len(coords) % 2 != 0:
+                                    raise ValueError("odd count")
+                                points = [(coords[i], coords[i+1]) for i in range(0, len(coords), 2)]
+                                specific_positions[(rx, rz)] = points
+                        except Exception:
+                            print(f"  Invalid position format for ({rx},{rz}) — using auto positions.")
+                            specific_positions[(rx, rz)] = None
+                    else:
+                        specific_positions[(rx, rz)] = None
+            print("  Specific quadrants and positions configured." if specific_quadrants else "  Using all quadrants with auto positions.")
+
+    # Only ask for bounds if not using specific quadrants
+    if specific_quadrants is None:
+        x1, z1, x2, z2 = _prompt_bounds(sep)
+    else:
+        x1, z1, x2, z2 = -999999, -999999, 999999, 999999  # No filtering bounds when using specific positions
+
+    # Warning for impossible cases
+    if specific_quadrants is None:
+        radius = max(abs(x1), abs(x2), abs(z1), abs(z2))
+        if radius < 16 * sep and occ >= 2:
+            print(f"  WARNING: Search radius ({radius}) < 16 * separation ({16 * sep}) = {16 * sep}")
+            print("           With min occurrence >= 2, this may be impossible as structures")
+            print("           are spaced at least 16 * separation blocks apart.")
+            ans = input("  Continue anyway? (y/n) [y]: ").strip().lower()
+            if ans in ("n", "no"):
+                return None, False  # Skip this constraint
 
     print()
     raw_offx = input("  Chunk offset X [8]: ").strip()
@@ -148,10 +277,31 @@ def _prompt_structure_constraint(idx):
     else:
         print("  Using default offset (8, 8).")
 
-    biomes = bm.prompt_biome_validation()
+    quadrant_biomes = {}
     corner_check = False
-    needs_biome_gen = biomes is not None
-    if biomes is not None:
+    needs_biome_gen = False
+
+    ans = input(
+        "  Use independent biome checks per quadrant? (y/n) [n]\n"
+        "    Allows different biome filters for each quadrant.\n"
+        "    (y/n) [n]: "
+    ).strip().lower()
+    if ans in ("y", "yes"):
+        quadrants = specific_quadrants if specific_quadrants else [(0,0), (-1,0), (0,-1), (-1,-1)]
+        for rx, rz in quadrants:
+            print(f"  Biome filter for quadrant ({rx},{rz}) {REGION_LABELS[(rx,rz)]}:")
+            biomes = bm.prompt_biome_validation()
+            quadrant_biomes[(rx, rz)] = biomes
+            if biomes is not None:
+                needs_biome_gen = True
+    else:
+        biomes = bm.prompt_biome_validation()
+        if biomes is not None:
+            needs_biome_gen = True
+            for rx, rz in [(0,0), (-1,0), (0,-1), (-1,-1)]:
+                quadrant_biomes[(rx, rz)] = biomes
+
+    if needs_biome_gen:
         ans = input(
             "  4-corner biome check? (y/n) [n]\n"
             "    Checks structure position + 4 chunk corners (5 points).\n"
@@ -172,8 +322,10 @@ def _prompt_structure_constraint(idx):
         "x1": x1, "z1": z1, "x2": x2, "z2": z2,
         "offx":        offx,
         "offy":        offy,
-        "biomes":      biomes,
+        "quadrant_biomes": quadrant_biomes,
         "corner_check": corner_check,
+        "specific_quadrants": specific_quadrants,
+        "specific_positions": specific_positions,
     }, needs_biome_gen
 
 
@@ -216,17 +368,46 @@ def _prompt_biome_constraint(idx):
 # ---------------------------------------------------------------------------
 
 def _check_struct_positions(s48, c):
+    quadrants = c.get("specific_quadrants") or [(0, 0), (-1, 0), (0, -1), (-1, -1)]
     positions = []
     found = 0
-    for rx, rz in ((0, 0), (-1, 0), (0, -1), (-1, -1)):
-        pos = getpos(s48, rx, rz,
-                     c["spacing"], c["separation"], c["salt"], c["linear_sep"],
-                     c["offx"], c["offy"])
-        bx, bz = pos
-        in_box = c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"]
-        positions.append((pos, in_box))
-        if in_box:
-            found += 1
+    for rx, rz in quadrants:
+        pos_spec = None
+        if c.get("specific_positions") and (rx, rz) in c["specific_positions"]:
+            pos_spec = c["specific_positions"][(rx, rz)]
+
+        if pos_spec is None:
+            # Auto position for this quadrant
+            pos = getpos(s48, rx, rz,
+                         c["spacing"], c["separation"], c["salt"], c["linear_sep"],
+                         c["offx"], c["offy"])
+            bx, bz = pos
+            in_box = c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"]
+            positions.append(((rx, rz), pos, in_box))
+            if in_box:
+                found += 1
+
+        elif isinstance(pos_spec, tuple) and len(pos_spec) == 4:
+            # Range: x1,z1,x2,z2 (inclusive)
+            pos = getpos(s48, rx, rz,
+                         c["spacing"], c["separation"], c["salt"], c["linear_sep"],
+                         c["offx"], c["offy"])
+            bx, bz = pos
+            in_range = pos_spec[0] <= bx <= pos_spec[2] and pos_spec[1] <= bz <= pos_spec[3]
+            in_box = in_range and (c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"])
+            positions.append(((rx, rz), pos, in_box))
+            if in_box:
+                found += 1
+
+        else:
+            # Explicit point list
+            for pos in pos_spec:
+                bx, bz = pos
+                in_box = c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"]
+                positions.append(((rx, rz), pos, in_box))
+                if in_box:
+                    found += 1
+
     return positions, found
 
 
@@ -252,21 +433,27 @@ def _biome_passes(gen, pos, biomes, corner_check, offx, offy):
 def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
     per_struct = []
     for i, c in enumerate(struct_constraints):
-        if c["biomes"] is None:
+        if not c.get("quadrant_biomes"):
             per_struct.append(None)
             continue
 
         pos_list  = all_positions[i]
-        n_in_box  = sum(1 for _, ib in pos_list if ib)
+        n_in_box  = sum(1 for _, _, ib in pos_list if ib)
         found     = 0
         pos_biome = {}
         seen      = 0
 
-        for pos, in_box in pos_list:
+        for quad, pos, in_box in pos_list:
             if not in_box:
                 continue
-            ok, name = _biome_passes(gen, pos,
-                                     c["biomes"], c["corner_check"],
+            biomes = c["quadrant_biomes"].get(quad)
+            if biomes is None:
+                # No biome check for this quadrant
+                pos_biome[pos] = "no_check"
+                found += 1
+                seen += 1
+                continue
+            ok, name = _biome_passes(gen, pos, biomes, c["corner_check"],
                                      c["offx"], c["offy"])
             pos_biome[pos] = name
             if ok:
@@ -304,7 +491,7 @@ def _format_result(seed_out, struct_constraints, all_positions,
         # ---- compact single-constraint format --------------------------------
         pb = (per_struct_biome[0] or {}) if per_struct_biome else {}
         parts = []
-        for pos, in_box in all_positions[0]:
+        for quad, pos, in_box in all_positions[0]:
             if in_box and pos in pb:
                 parts.append(f"{str(pos):<10}  [{pb[pos]}]")
             elif in_box:
@@ -318,7 +505,7 @@ def _format_result(seed_out, struct_constraints, all_positions,
     for i, c in enumerate(struct_constraints):
         pb = (per_struct_biome[i] or {}) if per_struct_biome else {}
         tokens = []
-        for pos, in_box in all_positions[i]:
+        for quad, pos, in_box in all_positions[i]:
             if not in_box:
                 continue
             if pos in pb:
@@ -366,6 +553,9 @@ def seedsearch():
 
     # First constraint is always a structure
     c, nbg = _prompt_structure_constraint(1)
+    if c is None:
+        print("Constraint skipped. Exiting.")
+        return
     constraints.append(c)
     n_struct += 1
     if nbg:
@@ -386,9 +576,10 @@ def seedsearch():
         if ctype_raw in ("s", "structure"):
             n_struct += 1
             c, nbg = _prompt_structure_constraint(n_struct)
-            if nbg:
-                needs_biome_gen = True
-            constraints.append(c)
+            if c is not None:
+                if nbg:
+                    needs_biome_gen = True
+                constraints.append(c)
         else:
             n_biome_pt += 1
             c = _prompt_biome_constraint(n_biome_pt)
@@ -438,14 +629,29 @@ def seedsearch():
             f"#   Bounds: ({c['x1']},{c['z1']}) to ({c['x2']},{c['z2']})"
             f"  occurence={c['occurence']}  offset=({c['offx']},{c['offy']})"
         )
-        if c["biomes"] is not None:
-            labels = ", ".join(
-                bm.BIOME_NAMES.get(b, str(b)) for b in sorted(c["biomes"])
-            )
-            hdr_lines.append(
-                f"#   Biome filter: [{labels}]"
-                f"  corner_check={c['corner_check']}"
-            )
+        if c.get("specific_quadrants"):
+            quads = ", ".join(f"({rx},{rz})" for rx, rz in c["specific_quadrants"])
+            hdr_lines.append(f"#   Specific quadrants: {quads}")
+        if c.get("specific_positions"):
+            for quad, positions in c["specific_positions"].items():
+                if positions is None:
+                    continue
+                if isinstance(positions, tuple) and len(positions) == 4:
+                    x1r, z1r, x2r, z2r = positions
+                    hdr_lines.append(f"#   Position range for {quad}: ({x1r},{z1r})-({x2r},{z2r})")
+                else:
+                    pos_str = ", ".join(f"({x},{z})" for x, z in positions)
+                    hdr_lines.append(f"#   Positions for {quad}: {pos_str}")
+        if c.get("quadrant_biomes"):
+            for quad, biomes in c["quadrant_biomes"].items():
+                if biomes is not None:
+                    labels = ", ".join(
+                        bm.BIOME_NAMES.get(b, str(b)) for b in sorted(biomes)
+                    )
+                    hdr_lines.append(
+                        f"#   Biome filter for {quad}: [{labels}]"
+                        f"  corner_check={c['corner_check']}"
+                    )
     for bc in biome_constraints:
         labels = ", ".join(
             bm.BIOME_NAMES.get(b, str(b)) for b in sorted(bc["allowed"])
