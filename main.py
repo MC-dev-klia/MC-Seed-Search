@@ -183,129 +183,6 @@ def _prompt_bounds(seperation):
     return x1, z1, x2, z2
 
 
-def _calculate_structure_probability(sp, sep, x1, z1, x2, z2):
-    """
-    Calculate the probability of finding a structure in the valid range.
-    For each quadrant's allowed zone, calculates what fraction overlaps with
-    the search bounds. Expresses as "1 in X" format.
-    
-    Args:
-        sp: spacing (in chunks)
-        sep: separation (in chunks)
-        x1, z1, x2, z2: search bounds (in blocks)
-    
-    Returns:
-        dict with probabilities for each quadrant and overall
-    """
-    # Convert spacing/separation from chunks to blocks (1 chunk = 16 blocks)
-    sp_blocks = sp * 16
-    sep_blocks = sep * 16
-    allowed_size_blocks = (sp_blocks - sep_blocks)  # Size of allowed zone in blocks
-    
-    # Allowed zones for each quadrant (in blocks, where structures can actually spawn)
-    QUADRANT_ALLOWED = {
-        (0, 0):   {"x_min": 0,              "x_max": allowed_size_blocks,     
-                   "z_min": 0,              "z_max": allowed_size_blocks},
-        (-1, 0):  {"x_min": -sp_blocks,     "x_max": -sep_blocks,            
-                   "z_min": 0,              "z_max": allowed_size_blocks},
-        (0, -1):  {"x_min": 0,              "x_max": allowed_size_blocks,    
-                   "z_min": -sp_blocks,     "z_max": -sep_blocks},
-        (-1, -1): {"x_min": -sp_blocks,     "x_max": -sep_blocks,            
-                   "z_min": -sp_blocks,     "z_max": -sep_blocks},
-    }
-    
-    probabilities = {}
-    total_allowed_area = 0
-    total_overlap_area = 0
-    
-    for (rx, rz), zone in QUADRANT_ALLOWED.items():
-        # Allowed zone area for this quadrant
-        allowed_x_size = zone["x_max"] - zone["x_min"]
-        allowed_z_size = zone["z_max"] - zone["z_min"]
-        allowed_area = allowed_x_size * allowed_z_size
-        
-        # Intersection with search bounds
-        intersect_x_min = max(zone["x_min"], x1)
-        intersect_x_max = min(zone["x_max"], x2)
-        intersect_z_min = max(zone["z_min"], z1)
-        intersect_z_max = min(zone["z_max"], z2)
-        
-        # Calculate overlap area
-        if intersect_x_min < intersect_x_max and intersect_z_min < intersect_z_max:
-            overlap_area = (intersect_x_max - intersect_x_min) * (intersect_z_max - intersect_z_min)
-        else:
-            overlap_area = 0
-        
-        total_allowed_area += allowed_area
-        total_overlap_area += overlap_area
-        
-        # Calculate probability as "1 in X"
-        if overlap_area > 0:
-            # Probability = overlap_area / allowed_area = 1 in (allowed_area / overlap_area)
-            ratio = allowed_area / overlap_area
-            probabilities[(rx, rz)] = f"1 in {ratio:.0f}"
-        else:
-            probabilities[(rx, rz)] = "0 (impossible)"
-    
-    # Overall probability across all quadrants
-    if total_overlap_area > 0:
-        overall_ratio = total_allowed_area / total_overlap_area
-        probabilities["overall"] = f"1 in {overall_ratio:.0f}"
-    else:
-        probabilities["overall"] = "0 (impossible)"
-    
-    return probabilities
-
-
-def _print_structure_probabilities(sp, sep, x1, z1, x2, z2, label):
-    """
-    Print structure spawn probabilities in a formatted table.
-    """
-    probs = _calculate_structure_probability(sp, sep, x1, z1, x2, z2)
-    
-    print("\n  Probability of structure in valid range:")
-    print("  " + "-" * 55)
-    quad_labels = {
-        (0, 0):   "[+X +Z]",
-        (-1, 0):  "[-X +Z]",
-        (0, -1):  "[+X -Z]",
-        (-1, -1): "[-X -Z]",
-    }
-    
-    for quad in [(0, 0), (-1, 0), (0, -1), (-1, -1)]:
-        prob_str = probs.get(quad, "unknown")
-        # Format probability nicely
-        if prob_str == "0 (impossible)":
-            display_str = prob_str
-        elif prob_str == "1 in 1":
-            display_str = "100% (all possible)"
-        else:
-            # Extract the number and show percentage too
-            try:
-                ratio = int(prob_str.split()[-1])
-                percent = 100 / ratio
-                display_str = f"{prob_str:15} ({percent:.1f}%)"
-            except:
-                display_str = prob_str
-        print(f"    Quadrant {quad_labels[quad]:12} : {display_str}")
-    
-    print("  " + "-" * 55)
-    overall_str = probs["overall"]
-    if overall_str == "0 (impossible)":
-        overall_display = overall_str
-    elif overall_str == "1 in 1":
-        overall_display = "100% (all possible)"
-    else:
-        try:
-            ratio = int(overall_str.split()[-1])
-            percent = 100 / ratio
-            overall_display = f"{overall_str:15} ({percent:.1f}%)"
-        except:
-            overall_display = overall_str
-    print(f"    All quadrants        : {overall_display}")
-    print()
-
-
 def _prompt_structure_constraint(idx):
     print(f"\n=== Structure Constraint {idx} ===")
     sp, sep, sa, ls, label = _prompt_rng()
@@ -389,9 +266,6 @@ def _prompt_structure_constraint(idx):
             ans = input("  Continue anyway? (y/n) [y]: ").strip().lower()
             if ans in ("n", "no"):
                 return None, False  # Skip this constraint
-
-        # Show structure spawn probabilities
-        _print_structure_probabilities(sp, sep, x1, z1, x2, z2, label)
 
     print()
     raw_offx = input("  Chunk offset X [8]: ").strip()
