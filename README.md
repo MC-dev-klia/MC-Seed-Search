@@ -1,143 +1,115 @@
-# Minecraft Bedrock Seed Searcher - User Guide (AI Generated)
+# Minecraft Bedrock Structure Seed Searcher - Technical Guide
 
-This tool helps you find Minecraft seeds that contain specific structures (like villages, temples, or mansions) at desired locations. This guide explains all the technical terms you'll encounter when using the tool.
+This tool brute-forces Minecraft Bedrock seeds to find worlds where structures generate at specific coordinates. It implements the exact same RNG algorithms Minecraft uses for structure placement.
 
-## Quick Start
+### Structure Generation Process
+Minecraft uses a deterministic process to place structures:
 
-If you're new to Minecraft world generation, here's what you need to know:
-
-1. **Minecraft Seeds**: Every Minecraft world is generated from a number called a "seed". Different seeds create different worlds.
-2. **Structures**: These are special buildings or features that generate in specific locations (villages, temples, mansions, etc.)
-3. **Seed Searching**: This tool tries many different seeds to find ones where your desired structures appear where you want them.
-
-## Key Concepts
-
-### Seeds and Ranges
-
-- **SeedStart/SeedEnd**: The range of seed numbers to search through. Minecraft seeds are 64-bit numbers, but this tool can search efficiently through billions of possibilities.
-- **48-bit structure + 16-bit biome expansion**: An advanced mode that searches structure placement first (48 bits) then tests biome compatibility (16 bits) for much faster searching when you have biome requirements.
-
-### Structures
-
-Structures are special generated features in Minecraft. Each type has specific rules for where and how often they appear:
-
-- **Village**: Small settlements with houses, farms, and villagers
-- **Pillager Outpost**: Watchtowers with pillagers and illager banners
-- **Woodland Mansion**: Large dark forest houses with illagers
-- **Ocean Monument**: Underwater temples with guardians
-- **Shipwreck**: Sunken boats, sometimes with treasure
-- **Temples**: Desert Pyramids, Jungle Temples, Swamp Huts, and Igloos
-- **Ruined Portal**: Nether portal ruins that can spawn anywhere
-- **Bastion Remnant/Nether Fortress**: Nether structures (no biome restrictions)
+1. **World Seed**: 64-bit integer initializing all generation
+2. **Structure Seed**: Lower 48 bits of world seed used to generate structural positions
+3. **Region Division**: World divided into overlapping regions of size `spacing × spacing` chunks
+4. **Region Positioning**: 4 regions centered at chunk coordinates (0,0), (-spacing,0), (0,-spacing), (-spacing,-spacing)
+5. **Per-Region RNG**: Each region gets unique seed: `world_seed + rx * 341873128712 + rz * 132897987541 + salt`
+6. **Position Calculation**: RNG determines chunk offset within region bounds
+7. **Biome Validation**: Structure generates only if biome requirements met
 
 ### RNG Constants
+Each structure type has hardcoded parameters:
+- **Spacing**: The width/length of a region
+- **Separation**: The size of the separation zone in a region
+- **Salt**: Unique RNG identifier that makes each structure type generate differently
+- **Linear Separation**: Boolean controlling type of placement in region
+- **Offset**: The position inside a chunk the structure starts generating from
 
-Every structure type uses mathematical formulas to determine where it generates. These are the "RNG constants":
+### Region System --- MOST IMPORTANT TO UNDERSTAND
+The world is divided into overlapping regions for structure placement. Each region is `spacing × spacing` chunks in size and attempts to place exactly one structure. The four regions checked are centered at chunk coordinates (0,0), (-spacing,0), (0,-spacing), and (-spacing,-spacing).
 
-- **Spacing**: How far apart structures of this type tend to be (in chunks)
-- **Separation**: Minimum distance between structures (prevents them from being too close)
-- **Salt**: A unique number that makes each structure type generate differently
-- **Linear Separation**: Whether the spacing follows a grid (1) or more complex pattern (0)
+Within each region, structures can only generate in the "allowed zone" - the area that avoids the separation buffer from region edges. The "dead zone" is the separation buffer where structures cannot generate.
 
-### Search Bounds
-
-Where to look for your structures around the world origin (coordinates 0,0):
-
-- **Radius**: Search in a circle of ±N blocks from origin
-- **Box**: Search in a rectangle defined by coordinates (x1,z1) to (x2,z2)
-- **Closest**: Search for structures as close to origin as mathematically possible
-
-### Structure Occurrence
-
-- **Min Occurrence**: How many of this structure type you want to find. For example:
-  - "1" = find seeds with at least one village in your search area
-  - "4" = find seeds with villages in all 4 quadrants of your search area
-
-### Quadrants and Positions
-
-Minecraft worlds are divided into 4 regions around the origin:
-
-- **(0,0)**: Northeast quadrant (+X, +Z coordinates)
-- **(-1,0)**: Northwest quadrant (-X, +Z coordinates)
-- **(0,-1)**: Southeast quadrant (+X, -Z coordinates)
-- **(-1,-1)**: Southwest quadrant (-X, -Z coordinates)
-
-**Specific Quadrants**: Instead of searching all 4 quadrants, you can choose which ones to check.
-
-**Specific Positions**: For advanced users, you can specify exact coordinates or ranges where each structure should appear within its quadrant.
-
-### Chunk Offsets
-
-Structures don't generate at exact block coordinates. They're offset by a few chunks:
-
-- **Chunk Offset X/Z**: Usually 8,8 (meaning structures are offset by 8 chunks = 128 blocks from the mathematical position)
-- This is automatically handled, but advanced users can modify it.
-
-### Biome Validation
-
-Many structures only generate in specific biomes (world types):
-
-- **Biome Filter**: Check that structures generate in allowed biomes
-- **4-Corner Biome Check**: Verify the biome at the structure position AND the 4 surrounding chunk corners (5 points total)
-- **Independent Biome Checks**: Use different biome filters for each quadrant
-
-### Common Biome Types
-
-- **Overworld Biomes**: Plains, Desert, Forest, Taiga, Swamp, etc.
-- **Nether Biomes**: Crimson Forest, Warped Forest, Soul Sand Valley, etc.
-- **End Biomes**: The End dimension (not commonly searched)
-
-## Example Usage Scenarios
-
-### Find a Village Near Spawn
+The four regions used to test can fit in these spaces:
+AND means x and z have to both satisfy
+OR means at least one of x and z has to satisfy
 ```
-SeedStart: 0
-SeedEnd: 1000000
-Structure: village
-Bounds: radius 200
-Min Occurrence: 1
+Region (0,0):  
+    Overall: chunks 0 to spacing on both x and z
+    Dead Zone: chunks spacing - separation to spacing on x OR z
+    Allowed Zone: chunks 0 to spacing - separation on both x and z
+Region (-1,0):
+    Overall: chunks -spacing to 0 on x AND chunks 0 to spacing on z
+    Dead Zone: chunks -separation to 0 on x OR spacing - separation to spacing on z
+    Allowed Zone: chunks -spacing to -separation on x AND chunks 0 to spacing - separation on z
+Region (0,-1):
+    Overall: chunks 0 to spacing on x AND chunks -spacing to 0 on z
+    Dead Zone: chunks -separation to 0 on z OR spacing - separation to spacing on x
+    Allowed Zone: chunks 0 to spacing - separation on x AND chunks -spacing to -separation on z
+Region (-1,-1):  
+    Overall: chunks -spacing to 0 on both x and z
+    Dead Zone: chunks -separation to 0 on x OR z
+    Allowed Zone: chunks -spacing to -separation on both x and z
 ```
 
-### Find Seeds with Mansions in All Quadrants
-```
-SeedStart: 0
-SeedEnd: 1000000
-Structure: mansion
-Bounds: radius 1000
-Min Occurrence: 4
-Biome Filter: woodland_mansion
-```
+Each region attempts exactly one structure placement at:
+- **Chunk coordinates**: `(rx * spacing + random_offset, rz * spacing + random_offset)` where rx and rz are region coordinates
+- **Block coordinates**: `chunk_coords * 16 + offset`
+- **Offset**: Usually (8,8) for chunk center placement
 
-### Find Desert Temples with Specific Positioning
-```
-SeedStart: 0
-SeedEnd: 1000000
-Structure: desert temple
-Specific Quadrants: (0,0)
-Position Range: 100,100-200,200
-Biome Filter: desert
-```
+## Other specifics
 
-## Tips for Success
+### Bounds Specification
+- **Radius**: Square search area (±N blocks from origin)
+- **Box**: Rectangular search area (x1,z1 to x2,z2)
+- **Closest**: Optimized search for minimum-distance structures using mathematical bounds with custom error setup
+- **Region-Specific**: Targeting specific regions OR different bounding box for each region
 
-1. **Start Small**: Begin with small seed ranges and simple constraints
-2. **Use Biome Filters**: They dramatically speed up searches by eliminating impossible seeds
-3. **Understand Spacing**: Larger spacing = fewer structures, smaller spacing = more common
-4. **48-bit Mode**: Use when you have biome requirements - much faster for large searches
-5. **Min Occurrence**: Higher values (like 4) are very restrictive and may take longer to find
+### Occurrence Requirements
+- **Min Occurrence**: Number of structures required (1-4)
+- **Region Logic**: When <4, allows specifying which regions to check
+- **Position Constraints**: Exact coordinates or ranges within regions
 
-## Troubleshooting
+### World Coordinates
+- Standard Minecraft coordinates (X, Z)
+- Origin at (0, 0) - spawn chunks
+- Structures generate at chunk coordinates × 16 + offset
 
-- **No Results**: Try larger seed ranges or less restrictive bounds
-- **Slow Searches**: Add biome filters or use 48-bit expansion mode
-- **Invalid Input**: Check coordinate ranges and make sure min occurrence ≤ 4
-- **Biome Errors**: Some structures (bastion, fortress) have no biome restrictions
+### Chunk vs Block Coordinates
+- **Chunks**: 16×16 block areas
+- **Structure Position**: Chunk coordinates + offset (usually 8,8)
+- **Validation**: Biome checks at block level (chunk × 16 + offset)
 
-## Advanced Features
+### Multi-Constraint Searching
+Combines multiple structure requirements:
+- Primary constraint uses fast JIT-compiled kernel
+- Secondary constraints checked in Python (slower)
+- Order constraints by selectivity for optimal performance
 
-- **Multiple Constraints**: Search for seeds with village + outpost + mansion
-- **Biome Point Checks**: Find seeds where specific coordinates have certain biomes
-- **Custom RNG Values**: Enter your own spacing/separation/salt for modded structures
-- **File Output**: Save results to a file for later analysis
+### Region-Specific Configuration
+- **Independent Biome Filters**: Different biomes per region
+- **Position Ranges**: x1,z1-x2,z2 bounding boxes per region
+- **Custom Offsets**: Exact position inside a chunk
 
-Remember: Minecraft world generation is deterministic - the same seed always creates the same world. This tool helps you find seeds that match your criteria!
+### Search Strategies
+1. **Structure-Only**: Fastest, no biome validation
+2. **48-bit Expansion**: Best for biome-constrained searches
+3. **Standard Scan**: When 48-bit mode isn't applicable
+4. **Region Specification**: When you are targeting specific regions
+
+### Coordinate Precision
+- **Chunk Accuracy**: All calculations in chunk coordinates
+- **Block Conversion**: ×16 for world coordinates
+- **Floating Point**: No floating point in core algorithms (integer math only)
+
+### Validation
+- All algorithms verified against Minecraft Bedrock 1.21
+- Structure positions match game most of the time
+- Biome compatibility tested against official generation, may fail on biome edges or due to other factors
+- On edge cases, use https://www.chunkbase.com/apps/seed-map to verify false positives.
+
+### Common Issues
+- **No Seeds Found**: Increase search range or relax constraints, and check for impossibility
+- **Slow Performance**: Check the probability of succeeding and if it doesn't match expected, something is wrong, otherwise this is because 2^48 is a huge search space
+- **Memory Errors**: Reduce search range or use file output
+
+## Dependencies
+- **Numba JIT**: Compiles structure search kernels
+- **Cubiomes Library**: Biome noise generation
+- **Python 3.12+**: Modern Python features
