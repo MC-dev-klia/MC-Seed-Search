@@ -250,22 +250,18 @@ def _prompt_structure_constraint(idx):
                         specific_positions[(rx, rz)] = None
             print("  Specific quadrants and positions configured." if specific_quadrants else "  Using all quadrants with auto positions.")
 
-    # Only ask for bounds if not using specific quadrants
-    if specific_quadrants is None:
-        x1, z1, x2, z2 = _prompt_bounds(sep)
-    else:
-        x1, z1, x2, z2 = -999999, -999999, 999999, 999999  # No filtering bounds when using specific positions
+    # Always ask for bounds - they apply as additional filtering even with specific quadrants
+    x1, z1, x2, z2 = _prompt_bounds(sep)
 
     # Warning for impossible cases
-    if specific_quadrants is None:
-        radius = max(abs(x1), abs(x2), abs(z1), abs(z2))
-        if radius < 16 * sep and occ >= 2:
-            print(f"  WARNING: Search radius ({radius}) < 16 * separation ({16 * sep}) = {16 * sep}")
-            print("           With min occurrence >= 2, this may be impossible as structures")
-            print("           are spaced at least 16 * separation blocks apart.")
-            ans = input("  Continue anyway? (y/n) [y]: ").strip().lower()
-            if ans in ("n", "no"):
-                return None, False  # Skip this constraint
+    radius = max(abs(x1), abs(x2), abs(z1), abs(z2))
+    if radius < 16 * sep and occ >= 2:
+        print(f"  WARNING: Search radius ({radius}) < 16 * separation ({16 * sep}) = {16 * sep}")
+        print("           With min occurrence >= 2, this may be impossible as structures")
+        print("           are spaced at least 16 * separation blocks apart.")
+        ans = input("  Continue anyway? (y/n) [y]: ").strip().lower()
+        if ans in ("n", "no"):
+            return None, False  # Skip this constraint
 
     print()
     raw_offx = input("  Chunk offset X [8]: ").strip()
