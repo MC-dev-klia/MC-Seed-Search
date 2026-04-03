@@ -250,18 +250,27 @@ def _prompt_structure_constraint(idx):
                         specific_positions[(rx, rz)] = None
             print("  Specific quadrants and positions configured." if specific_quadrants else "  Using all quadrants with auto positions.")
 
-    # Always ask for bounds - they apply as additional filtering even with specific quadrants
-    x1, z1, x2, z2 = _prompt_bounds(sep)
+    # Ask for bounds unless specific positions are defined for all quadrants
+    has_specific_positions = specific_positions and any(pos is not None for pos in specific_positions.values())
+    
+    if has_specific_positions:
+        # When specific positions are defined, disable additional bounds filtering
+        x1, z1, x2, z2 = -999999, -999999, 999999, 999999
+        print("  Using specific position ranges — additional bounds filtering disabled.")
+    else:
+        # Ask for bounds for additional filtering
+        x1, z1, x2, z2 = _prompt_bounds(sep)
 
-    # Warning for impossible cases
-    radius = max(abs(x1), abs(x2), abs(z1), abs(z2))
-    if radius < 16 * sep and occ >= 2:
-        print(f"  WARNING: Search radius ({radius}) < 16 * separation ({16 * sep}) = {16 * sep}")
-        print("           With min occurrence >= 2, this may be impossible as structures")
-        print("           are spaced at least 16 * separation blocks apart.")
-        ans = input("  Continue anyway? (y/n) [y]: ").strip().lower()
-        if ans in ("n", "no"):
-            return None, False  # Skip this constraint
+    # Warning for impossible cases (only when bounds are actually used)
+    if not has_specific_positions:
+        radius = max(abs(x1), abs(x2), abs(z1), abs(z2))
+        if radius < 16 * sep and occ >= 2:
+            print(f"  WARNING: Search radius ({radius}) < 16 * separation ({16 * sep}) = {16 * sep}")
+            print("           With min occurrence >= 2, this may be impossible as structures")
+            print("           are spaced at least 16 * separation blocks apart.")
+            ans = input("  Continue anyway? (y/n) [y]: ").strip().lower()
+            if ans in ("n", "no"):
+                return None, False  # Skip this constraint
 
     print()
     raw_offx = input("  Chunk offset X [8]: ").strip()
