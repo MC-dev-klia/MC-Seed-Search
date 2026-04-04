@@ -712,6 +712,7 @@ def seedsearch():
         total_jit     = 0   # seeds from JIT kernel (before Python box filter)
         total_struct   = 0   # seeds passing all structure constraint box checks
         total_matched  = 0   # seeds passing all constraints including biome
+        batch_struct   = 0   # seeds in current batch passing structure checks
 
         while s < seedend:
             batch_end = min(s + BATCH, seedend)
@@ -724,7 +725,7 @@ def seedsearch():
                 )
             else:
                 prog = (
-                    f"[Progress] scanned up to {batch_end}"
+                    f"[Progress] scanned up to {batch_end - BATCH}"
                     f"  elapsed={elapsed:.1f}s"
                     f"  hits={batch_struct}  (total={total_struct})"
                 )
