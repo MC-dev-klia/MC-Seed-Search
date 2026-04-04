@@ -715,7 +715,23 @@ def seedsearch():
 
         while s < seedend:
             batch_end = min(s + BATCH, seedend)
-
+             # --- progress report ---
+            elapsed = time.time() - times
+            if needs_biome_gen:
+                prog = (
+                    f"[Progress] scanned up to {s}"
+                    f"  elapsed={elapsed:.1f}s"
+                )
+            else:
+                prog = (
+                    f"[Progress] scanned up to {batch_end}"
+                    f"  elapsed={elapsed:.1f}s"
+                    f"  hits={batch_struct}  (total={total_struct})"
+                )
+            print(prog, flush=True)
+            if not to_console and f:
+                f.write(prog + "\n")
+                f.flush()
             # --- JIT scan (primary structure constraint, enlarged radius) ---
             jit_hits = scan_batch(
                 s, batch_end,
@@ -788,26 +804,6 @@ def seedsearch():
 
             total_struct  += batch_struct
             total_matched += batch_matched
-
-            # --- progress report ---
-            elapsed = time.time() - times
-            if needs_biome_gen:
-                prog = (
-                    f"[Progress] scanned up to {batch_end}"
-                    f"  elapsed={elapsed:.1f}s"
-                    f"  struct_hits={batch_struct}  validated={batch_matched}"
-                    f"  (total struct={total_struct}, total validated={total_matched})"
-                )
-            else:
-                prog = (
-                    f"[Progress] scanned up to {batch_end}"
-                    f"  elapsed={elapsed:.1f}s"
-                    f"  hits={batch_struct}  (total={total_struct})"
-                )
-            print(prog, flush=True)
-            if not to_console and f:
-                f.write(prog + "\n")
-                f.flush()
 
             s = batch_end
 
