@@ -6,7 +6,7 @@ This tool brute-forces Minecraft Bedrock seeds to find worlds where structures g
 Minecraft uses a deterministic process to place structures:
 
 1. **World Seed**: 64-bit integer initializing all generation
-2. **Structure Seed**: Lower 48 bits of world seed used to generate structural positions
+2. **Structure Seed**: Lower 32 bits of world seed used to generate structural positions
 3. **Region Division**: World divided into overlapping regions of size `spacing × spacing` chunks
 4. **Region Positioning**: 4 regions centered at chunk coordinates (0,0), (-spacing,0), (0,-spacing), (-spacing,-spacing)
 5. **Per-Region RNG**: Each region gets unique seed: `world_seed + rx * 341873128712 + rz * 132897987541 + salt`
@@ -106,7 +106,7 @@ Combines multiple structure requirements:
 
 ### Common Issues
 - **No Seeds Found**: Increase search range or relax constraints, and check for impossibility
-- **Slow Performance**: Check the probability of succeeding and if it doesn't match expected, something is wrong, otherwise this is because 2^48 is a huge search space
+- **Slow Performance**: Check the probability of succeeding and if it doesn't match expected, something is wrong, otherwise this is because 2^64 is a huge search space
 - **Memory Errors**: Reduce search range or use file output
 
 ## Dependencies
