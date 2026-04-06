@@ -1,7 +1,7 @@
 # Minecraft Bedrock Seed Searcher
 
 ## Overview
-A brute-force structural 48-bit seed searcher for Minecraft Bedrock Edition,
+A brute-force structural 32-bit seed searcher for Minecraft Bedrock Edition,
 with optional Java Edition biome filtering powered by the
 [cubiomes](https://github.com/Cubitect/cubiomes) C library.
 

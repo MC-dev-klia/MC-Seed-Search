@@ -395,7 +395,7 @@ def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation,
 
     Parameters
     ----------
-    world_seed       : 48-bit world seed
+    world_seed       : 32-bit world seed
     rx, rz           : region coordinates (integers)
     spacing          : region size in chunks
     separation       : minimum separation in chunks

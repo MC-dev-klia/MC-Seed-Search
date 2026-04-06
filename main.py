@@ -1,6 +1,6 @@
 """
 main.py — Seed search loop with layered constraints, bounding-box bounds,
-          biome point-checks, and 48-bit expansion mode.
+          biome point-checks, and 32-bit expansion mode.
 
 Constraint types
 ----------------
@@ -28,7 +28,7 @@ from structure import getpos, scan_batch
 
 sys.stdout.reconfigure(line_buffering=True)
 
-MASK48   = (1 << 48) - 1
+MASK32   = (1 << 32) - 1
 SIGN_BIT = 1 << 63
 TWO64    = 1 << 64
 
@@ -49,7 +49,7 @@ Inputs:
     3e - Biome filters: Optionally specify allowed biomes for each quadrant of the structure
         3e.1 - Independent biome filters: Allow different biome sets for each quadrant.
         3e.2 - Corner check: If enabled, also check the biome at the 4 chunk corners around each structure position.
-4 - Expand-16 mode: If biome checks are needed, optionally enable a mode that scans 65535 seeds with same structural positions for biome matching.
+4 - Expansion mode: If biome checks are needed, optionally enable a mode that scans the first N upper 32-bit seed variants for biome matching.
 
 Additional notes:
 Biomes are taken from java biomes, mostly accurate but may differ in edge biomes.
@@ -381,7 +381,7 @@ def _prompt_biome_constraint(idx):
 # Runtime helpers
 # ---------------------------------------------------------------------------
 
-def _check_struct_positions(s48, c):
+def _check_struct_positions(s32, c):
     quadrants = c.get("specific_quadrants") or [(0, 0), (-1, 0), (0, -1), (-1, -1)]
     positions = []
     found = 0
@@ -392,7 +392,7 @@ def _check_struct_positions(s48, c):
 
         if pos_spec is None:
             # Auto position for this quadrant
-            pos = getpos(s48, rx, rz,
+            pos = getpos(s32, rx, rz,
                          c["spacing"], c["separation"], c["salt"], c["linear_sep"],
                          c["offx"], c["offy"])
             bx, bz = pos
@@ -403,7 +403,7 @@ def _check_struct_positions(s48, c):
 
         elif isinstance(pos_spec, tuple) and len(pos_spec) == 4:
             # Range: x1,z1,x2,z2 (inclusive)
-            pos = getpos(s48, rx, rz,
+            pos = getpos(s32, rx, rz,
                          c["spacing"], c["separation"], c["salt"], c["linear_sep"],
                          c["offx"], c["offy"])
             bx, bz = pos
@@ -415,7 +415,7 @@ def _check_struct_positions(s48, c):
 
         else:
             # Explicit point list - calculate actual position and check if it matches any specified point
-            actual_pos = getpos(s48, rx, rz,
+            actual_pos = getpos(s32, rx, rz,
                          c["spacing"], c["separation"], c["salt"], c["linear_sep"],
                          c["offx"], c["offy"])
             bx, bz = actual_pos
@@ -545,8 +545,10 @@ def seedsearch():
     print(BANNER)
 
     # ---- seed range ---------------------------------------------------------
-    seedstart = int(input("SeedStart: "))
-    seedend   = int(input("SeedEnd: "))
+    raw_start = input("SeedStart [0]: ").strip()
+    seedstart = int(raw_start) if raw_start else 0
+    raw_end = input(f"SeedEnd [{1 << 32}]: ").strip()
+    seedend = int(raw_end) if raw_end else (1 << 32)
 
     # ---- output destination -------------------------------------------------
     print()
@@ -609,18 +611,27 @@ def seedsearch():
     struct_constraints = [c for c in constraints if c["type"] == "structure"]
     biome_constraints  = [c for c in constraints if c["type"] == "biome"]
 
-    # ---- expand-16 mode (asked once, after constraints) --------------------
-    expand_16 = False
+    # ---- expansion mode (asked once, after constraints) ---------------------
+    expand_mode = False
+    expand_top_count = 0
+    expand_stop_on_matches = 1
     if needs_biome_gen:
         print()
         ans = input(
-            "Enable 48-bit structure scan with 16-bit biome expansion?\n"
-            "  (Scan 48-bit seeds for structure, then test all 65536 top-bit\n"
-            "   variants for biome — much faster for full-space searches.)\n"
+            "Enable 32-bit structure scan with 32-bit biome expansion?\n"
+            "  (Scan 32-bit seeds for structure, then test the first N upper\n"
+            "   32-bit variants for biome — much faster than a full 2^32 expansion.)\n"
             "  (y/n) [n]: "
         ).strip().lower()
-        expand_16 = ans in ("y", "yes")
-        print("  Expansion mode ON." if expand_16 else "  Expansion mode OFF.")
+        expand_mode = ans in ("y", "yes")
+        if expand_mode:
+            raw_top = input("  Test first N upper 32-bit values [65535]: ").strip()
+            expand_top_count = int(raw_top) if raw_top else 65535
+            raw_stop = input("  Stop after N matched biome seeds [1]: ").strip()
+            expand_stop_on_matches = int(raw_stop) if raw_stop else 1
+            if expand_stop_on_matches < 0:
+                expand_stop_on_matches = 0
+        print("  Expansion mode ON." if expand_mode else "  Expansion mode OFF.")
 
     # ---- biome generator ---------------------------------------------------
     biome_gen = None
@@ -631,8 +642,8 @@ def seedsearch():
     print()
 
     # ---- build header -------------------------------------------------------
-    mode_label = ("48-bit structure + 16-bit biome expansion"
-                  if expand_16 else "standard scan")
+    mode_label = ("32-bit structure + 32-bit biome expansion"
+                  if expand_mode else "standard scan")
     hdr_lines = [
         f"# Mode: {mode_label}",
         f"# Range [{seedstart}, {seedend})",
@@ -744,14 +755,14 @@ def seedsearch():
             batch_matched = 0
 
             for seed_val_raw in jit_hits:
-                s48 = int(seed_val_raw)
+                s32 = int(seed_val_raw)
 
                 # ---- check all structure constraints at Python level --------
                 all_positions = []
                 struct_ok = True
 
                 for i, c in enumerate(struct_constraints):
-                    positions, found = _check_struct_positions(s48, c)
+                    positions, found = _check_struct_positions(s32, c)
                     all_positions.append(positions)
                     if found < c["occurence"]:
                         struct_ok = False
@@ -765,14 +776,15 @@ def seedsearch():
                 if biome_gen is None:
                     # No biome constraints: emit directly
                     batch_matched += 1
-                    emit(_format_result(s48, struct_constraints, all_positions,
+                    emit(_format_result(s32, struct_constraints, all_positions,
                                         biome_constraints, None, None), f)
 
-                elif expand_16:
-                    # Try all 65536 top-bit values
-                    s48_masked = s48 & MASK48
-                    for top in range(0x10000):
-                        full_seed = (top << 48) | s48_masked
+                elif expand_mode:
+                    # Try the first N upper 32-bit values
+                    s32_masked = s32 & MASK32
+                    matched_for_seed = 0
+                    for top in range(expand_top_count):
+                        full_seed = (top << 32) | s32_masked
                         if full_seed >= SIGN_BIT:
                             full_seed -= TWO64
                         biome_gen.apply_seed(full_seed)
@@ -784,13 +796,16 @@ def seedsearch():
                         )
                         if ok:
                             batch_matched += 1
+                            matched_for_seed += 1
                             emit(_format_result(
                                 full_seed, struct_constraints, all_positions,
                                 biome_constraints, per_struct_biome, per_biome_names,
                             ), f)
+                            if expand_stop_on_matches and matched_for_seed >= expand_stop_on_matches:
+                                break
 
                 else:
-                    biome_gen.apply_seed(s48)
+                    biome_gen.apply_seed(s32)
                     ok, per_struct_biome, per_biome_names = _check_biomes(
                         biome_gen,
                         struct_constraints, all_positions,
@@ -799,7 +814,7 @@ def seedsearch():
                     if ok:
                         batch_matched += 1
                         emit(_format_result(
-                            s48, struct_constraints, all_positions,
+                            s32, struct_constraints, all_positions,
                             biome_constraints, per_struct_biome, per_biome_names,
                         ), f)
 

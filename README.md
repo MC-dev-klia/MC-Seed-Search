@@ -89,8 +89,8 @@ Combines multiple structure requirements:
 
 ### Search Strategies
 1. **Structure-Only**: Fastest, no biome validation
-2. **48-bit Expansion**: Best for biome-constrained searches
-3. **Standard Scan**: When 48-bit mode isn't applicable
+2. **32-bit Expansion**: Best for biome-constrained searches using a limited upper-32-bit expansion
+3. **Standard Scan**: When expansion mode isn't applicable
 4. **Region Specification**: When you are targeting specific regions
 
 ### Coordinate Precision
