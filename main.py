@@ -942,7 +942,7 @@ def seedsearch():
                     f"[Progress] scanned up to {s}"
                     f"  elapsed={elapsed:.1f}s"
                 )
-            else if batch_end < BATCH:
+            elif batch_end < BATCH:
                 prog = (
                     f"[Progress] scanned up to {batch_end - BATCH}"
                     f"  elapsed={elapsed:.1f}s"
