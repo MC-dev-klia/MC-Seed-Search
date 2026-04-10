@@ -246,7 +246,7 @@ def _prompt_structure_constraint(idx):
     # Skip quadrant-specific prompts for stronghold (doesn't use standard quadrant placement)
     if occ < 4 and struct_type != "stronghold":
         ans = input(
-            "  Specify specific quadrants and positions? (y/n) [n]\n"
+            "  Specify specific quadrants and positions? (y/n) [n]"
         ).strip().lower()
         if ans in ("y", "yes"):
             print("  Quadrants: (0,0)=[+X +Z], (-1,0)=[-X +Z], (0,-1)=[+X -Z], (-1,-1)=[-X -Z]")
@@ -270,7 +270,7 @@ def _prompt_structure_constraint(idx):
                 specific_positions = {}
                 for rx, rz in specific_quadrants:
                     pos_input = input(
-                        f"  Positions for quadrant ({rx},{rz}) (point list like x1,z1 x2,z2 or range x1,z1-x2,z2 or 'from x1,z1 to x2,z2') [auto]: "
+                        f"  Positions for quadrant ({rx},{rz}) (range x1,z1-x2,z2 or 'from x1,z1 to x2,z2') [auto]: "
                     ).strip()
                     if pos_input:
                         try:
@@ -338,7 +338,7 @@ def _prompt_structure_constraint(idx):
     # Skip independent biome checks per quadrant for stronghold (doesn't use standard quadrant placement)
     if struct_type != "stronghold":
         ans = input(
-            "  Use independent biome checks per quadrant? (y/n) [n]\n"
+            "  Use independent biome checks per quadrant? (y/n) [n]"
         ).strip().lower()
         if ans in ("y", "yes"):
             quadrants = specific_quadrants if specific_quadrants else [(0,0), (-1,0), (0,-1), (-1,-1)]
@@ -942,11 +942,15 @@ def seedsearch():
                     f"[Progress] scanned up to {s}"
                     f"  elapsed={elapsed:.1f}s"
                 )
-            elif batch_end < BATCH:
+            elif batch_end >= BATCH:
                 prog = (
                     f"[Progress] scanned up to {batch_end - BATCH}"
                     f"  elapsed={elapsed:.1f}s"
                     f"  hits={batch_struct}  (total={total_struct})"
+                )
+            else:
+                prog = (
+                    "Starting Search..."
                 )
             print(prog, flush=True)
             if not to_console and f:
