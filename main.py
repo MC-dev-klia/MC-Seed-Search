@@ -247,7 +247,6 @@ def _prompt_structure_constraint(idx):
     if occ < 4 and struct_type != "stronghold":
         ans = input(
             "  Specify specific quadrants and positions? (y/n) [n]\n"
-"
         ).strip().lower()
         if ans in ("y", "yes"):
             print("  Quadrants: (0,0)=[+X +Z], (-1,0)=[-X +Z], (0,-1)=[+X -Z], (-1,-1)=[-X -Z]")
