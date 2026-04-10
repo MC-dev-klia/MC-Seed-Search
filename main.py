@@ -25,6 +25,7 @@ import time
 import re
 import biome as bm
 from structure import getpos, scan_batch
+import structure_variants as sv
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -73,61 +74,64 @@ REGION_LABELS = {
 
 PRESETS = {
     # Bastion Remnants / Nether Fortress
-    "bastion":          (30,  4, 30084232,  False),
-    "bastion remnant":  (30,  4, 30084232,  False),
-    "fortress":         (30,  4, 30084232,  False),
-    "nether fortress":  (30,  4, 30084232,  False),
-    "bastion/fortress": (30,  4, 30084232,  False),
+    "bastion":          (30,  4, 30084232,  False, "bastion"),
+    "bastion remnant":  (30,  4, 30084232,  False, "bastion"),
+    "fortress":         (30,  4, 30084232,  False, "fortress"),
+    "nether fortress":  (30,  4, 30084232,  False, "fortress"),
+    "bastion/fortress": (30,  4, 30084232,  False, "either"),
     
     # Village
-    "village":          (34,  8, 10387312,  True),
+    "village":          (34,  8, 10387312,  True, None),
+    
+    # Stronghold (special: no standard structure params)
+    "stronghold":       (0, 0, 0, False, "stronghold"),
     
     # Pillager Outpost
-    "pillager":         (80, 24, 165745296, True),
-    "outpost":          (80, 24, 165745296, True),
-    "pillager outpost": (80, 24, 165745296, True),
-    "pillager post":    (80, 24, 165745296, True),
+    "pillager":         (80, 24, 165745296, True, None),
+    "outpost":          (80, 24, 165745296, True, None),
+    "pillager outpost": (80, 24, 165745296, True, None),
+    "pillager post":    (80, 24, 165745296, True, None),
     
     # Woodland Mansion
-    "mansion":          (80, 20, 10387319,  True),
-    "woodland mansion": (80, 20, 10387319,  True),
-    "dark forest mansion": (80, 20, 10387319,  True),
+    "mansion":          (80, 20, 10387319,  True, None),
+    "woodland mansion": (80, 20, 10387319,  True, None),
+    "dark forest mansion": (80, 20, 10387319,  True, None),
     
     # Ocean Monument
-    "monument":         (32,  5, 10387313,  True),
-    "ocean monument":   (32,  5, 10387313,  True),
-    "guardian temple":  (32,  5, 10387313,  True),
+    "monument":         (32,  5, 10387313,  True, None),
+    "ocean monument":   (32,  5, 10387313,  True, None),
+    "guardian temple":  (32,  5, 10387313,  True, None),
     
     # Shipwreck
-    "shipwreck":        (24,  4, 165745295, False),
-    "wreck":            (24,  4, 165745295, False),
-    "ship":             (24,  4, 165745295, False),
+    "shipwreck":        (24,  4, 165745295, False, None),
+    "wreck":            (24,  4, 165745295, False, None),
+    "ship":             (24,  4, 165745295, False, None),
     
     # Ruined Portal
-    "portal":           (40, 15, 40552231,  False),
-    "ruined portal":    (40, 15, 40552231,  False),
-    "ruined":           (40, 15, 40552231,  False),
+    "portal":           (40, 15, 40552231,  False, "portal"),
+    "ruined portal":    (40, 15, 40552231,  False, "portal"),
+    "ruined":           (40, 15, 40552231,  False, "portal"),
     
     # Temples (Desert Pyramid, Jungle Temple, Swamp Hut, Igloo)
-    "temple":           (32,  8, 14357617,  False),
-    "temples":          (32,  8, 14357617,  False),
-    "desert pyramid":   (32,  8, 14357617,  False),
-    "desert temple":    (32,  8, 14357617,  False),
-    "desert":           (32,  8, 14357617,  False),
-    "pyramid":          (32,  8, 14357617,  False),
-    "jungle temple":    (32,  8, 14357617,  False),
-    "jungle pyramid":   (32,  8, 14357617,  False),
-    "jungle":           (32,  8, 14357617,  False),
-    "swamp hut":        (32,  8, 14357617,  False),
-    "witch hut":        (32,  8, 14357617,  False),
-    "swamp":            (32,  8, 14357617,  False),
-    "igloo":            (32,  8, 14357617,  False),
-    "ice house":        (32,  8, 14357617,  False),
+    "temple":           (32,  8, 14357617,  False, None),
+    "temples":          (32,  8, 14357617,  False, None),
+    "desert pyramid":   (32,  8, 14357617,  False, None),
+    "desert temple":    (32,  8, 14357617,  False, None),
+    "desert":           (32,  8, 14357617,  False, None),
+    "pyramid":          (32,  8, 14357617,  False, None),
+    "jungle temple":    (32,  8, 14357617,  False, None),
+    "jungle pyramid":   (32,  8, 14357617,  False, None),
+    "jungle":           (32,  8, 14357617,  False, None),
+    "swamp hut":        (32,  8, 14357617,  False, None),
+    "witch hut":        (32,  8, 14357617,  False, None),
+    "swamp":            (32,  8, 14357617,  False, None),
+    "igloo":            (32,  8, 14357617,  False, None),
+    "ice house":        (32,  8, 14357617,  False, None),
 }
 
 PRESET_NAMES = [
-    "bastion/fortress", "village", "outpost",
-    "mansion", "monument", "shipwreck", "portal", "temple",
+    "bastion/fortress", "bastion", "fortress", "stronghold", "village",
+    "outpost", "mansion", "monument", "shipwreck", "portal", "temple",
 ]
 
 
@@ -142,17 +146,18 @@ def _prompt_rng():
     print("    (type a preset name, or press Enter to enter values manually)")
     raw = input("  Structure preset: ").strip().lower()
     if raw in PRESETS:
-        sp, sep, sa, ls = PRESETS[raw]
+        preset_data = PRESETS[raw]
+        sp, sep, sa, ls, struct_type = preset_data
         print(f"    Loaded '{raw}': spacing={sp}, separation={sep}, "
               f"salt={sa}, linear={int(ls)}")
-        return sp, sep, sa, ls, raw
+        return sp, sep, sa, ls, raw, struct_type
     if raw:
         print(f"    Unknown preset '{raw}' — entering manually.")
     sp  = int(input("  Spacing: "))
     sep = int(input("  Separation: "))
     sa  = int(input("  Salt: "))
     ls  = bool(int(input("  Linear separation (0 or 1): ")))
-    return sp, sep, sa, ls, f"{sp}/{sep}/{sa}"
+    return sp, sep, sa, ls, f"{sp}/{sep}/{sa}", None
 
 
 def _prompt_bounds(seperation):
@@ -185,7 +190,51 @@ def _prompt_bounds(seperation):
 
 def _prompt_structure_constraint(idx):
     print(f"\n=== Structure Constraint {idx} ===")
-    sp, sep, sa, ls, label = _prompt_rng()
+    sp, sep, sa, ls, label, struct_type = _prompt_rng()
+
+    # Ask for variant type if applicable
+    variant_filter = None
+    if struct_type == "bastion":
+        variant_names = ["bridge", "treasure", "hoglin", "housing"]
+        print("  Bastion types: 0=any, 1=bridge, 2=treasure, 3=hoglin, 4=housing")
+        var_input = input("  Bastion type [0]: ").strip() or "0"
+        try:
+            var_idx = int(var_input)
+            if 1 <= var_idx <= 4:
+                variant_filter = var_idx - 1  # Store as 0-3 for internal use
+        except ValueError:
+            pass
+    elif struct_type == "portal" or struct_type == "ruined_portal":
+        # Question 1: Underground vs Surface
+        print("  Question 1 - Depth:")
+        print("    0=any, 1=underground, 2=surface")
+        depth_input = input("  Depth filter [0]: ").strip() or "0"
+        try:
+            depth_idx = int(depth_input)
+            if depth_idx not in (0, 1, 2):
+                depth_idx = 0
+        except ValueError:
+            depth_idx = 0
+        
+        # Question 2: Giant vs Normal
+        print("  Question 2 - Portal type:")
+        print("    0=any, 1=giant, 2=normal")
+        type_input = input("  Portal type [0]: ").strip() or "0"
+        try:
+            type_idx = int(type_input)
+            if type_idx not in (0, 1, 2):
+                type_idx = 0
+        except ValueError:
+            type_idx = 0
+        
+        # Store as tuple (depth_filter, type_filter) if any filter is set
+        if depth_idx > 0 or type_idx > 0:
+            variant_filter = (depth_idx, type_idx)
+        else:
+            variant_filter = None
+    elif struct_type == "fortress":
+        # Fortress has no subtypes
+        pass
 
     specific_quadrants = None
     specific_positions = None
@@ -194,7 +243,8 @@ def _prompt_structure_constraint(idx):
     occ_raw = input("  Min occurrence [1]: ").strip()
     occ = int(occ_raw) if occ_raw else 1
 
-    if occ < 4:
+    # Skip quadrant-specific prompts for stronghold (doesn't use standard quadrant placement)
+    if occ < 4 and struct_type != "stronghold":
         ans = input(
             "  Specify specific quadrants and positions? (y/n) [n]\n"
             "    Allows choosing which quadrants to check and custom positions\n"
@@ -295,23 +345,33 @@ def _prompt_structure_constraint(idx):
     corner_check = False
     needs_biome_gen = False
 
-    ans = input(
-        "  Use independent biome checks per quadrant? (y/n) [n]\n"
-        "    Allows different biome filters for each quadrant.\n"
-        "    (y/n) [n]: "
-    ).strip().lower()
-    if ans in ("y", "yes"):
-        quadrants = specific_quadrants if specific_quadrants else [(0,0), (-1,0), (0,-1), (-1,-1)]
-        for rx, rz in quadrants:
-            print(f"  Biome filter for quadrant ({rx},{rz}) {REGION_LABELS[(rx,rz)]}:")
+    # Skip independent biome checks per quadrant for stronghold (doesn't use standard quadrant placement)
+    if struct_type != "stronghold":
+        ans = input(
+            "  Use independent biome checks per quadrant? (y/n) [n]\n"
+            "    Allows different biome filters for each quadrant.\n"
+            "    (y/n) [n]: "
+        ).strip().lower()
+        if ans in ("y", "yes"):
+            quadrants = specific_quadrants if specific_quadrants else [(0,0), (-1,0), (0,-1), (-1,-1)]
+            for rx, rz in quadrants:
+                print(f"  Biome filter for quadrant ({rx},{rz}) {REGION_LABELS[(rx,rz)]}:")
+                biomes = bm.prompt_biome_validation()
+                quadrant_biomes[(rx, rz)] = biomes
+                if biomes is not None:
+                    needs_biome_gen = True
+        else:
             biomes = bm.prompt_biome_validation()
-            quadrant_biomes[(rx, rz)] = biomes
             if biomes is not None:
                 needs_biome_gen = True
+                for rx, rz in [(0,0), (-1,0), (0,-1), (-1,-1)]:
+                    quadrant_biomes[(rx, rz)] = biomes
     else:
+        # For stronghold, ask for global biome filter (not per-quadrant)
         biomes = bm.prompt_biome_validation()
         if biomes is not None:
             needs_biome_gen = True
+            # Apply same biome filter to all quadrants for stronghold
             for rx, rz in [(0,0), (-1,0), (0,-1), (-1,-1)]:
                 quadrant_biomes[(rx, rz)] = biomes
 
@@ -328,6 +388,8 @@ def _prompt_structure_constraint(idx):
     return {
         "type":        "structure",
         "label":       label,
+        "struct_type": struct_type,
+        "variant_filter": variant_filter,  # Filter by specific variant (bastion type, portal type)
         "spacing":     sp,
         "separation":  sep,
         "salt":        sa,
@@ -340,6 +402,7 @@ def _prompt_structure_constraint(idx):
         "corner_check": corner_check,
         "specific_quadrants": specific_quadrants,
         "specific_positions": specific_positions,
+        "variants":    {},  # Will store (pos) -> variant_info mappings
     }, needs_biome_gen
 
 
@@ -381,7 +444,95 @@ def _prompt_biome_constraint(idx):
 # Runtime helpers
 # ---------------------------------------------------------------------------
 
-def _check_struct_positions(s32, c):
+def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz, spacing, variant_filter=None):
+    """Helper to classify structure variant based on type.
+    
+    Args:
+        seed32: 32-bit world seed
+        struct_type: structure type indicator from preset
+        chunk_x, chunk_z: chunk coordinates (from block coords >> 4)
+        chunk_bx, chunk_bz: block coordinates (for context)
+        spacing: structure spacing (to compute region coords)
+        variant_filter: optional variant preference to check against (None = accept all)
+    
+    Returns: (variant_label, matches_filter) or None if doesn't match filter
+    """
+    # Compute region coordinates from chunk coordinates
+    region_x = chunk_x // spacing if spacing else 0
+    region_z = chunk_z // spacing if spacing else 0
+    
+    if struct_type == "bastion":
+        structure_name, bastion_type = sv.classify_bastion_or_fortress(seed32, region_x, region_z)
+        if structure_name == "bastion":
+            bastion_names = ["bridge", "treasure", "hoglin", "housing"]
+            variant_label = f"bastion:{bastion_names[bastion_type]}"
+            # Check if matches filter (variant_filter is 0-3 for bastion types)
+            if variant_filter is not None and variant_filter >= 0 and bastion_type != variant_filter:
+                return None  # Doesn't match filter
+            return variant_label
+        else:
+            # It's a fortress, not bastion
+            return None if (struct_type == "bastion" and variant_filter is not None) else "fortress"
+    elif struct_type == "fortress":
+        structure_name, _ = sv.classify_bastion_or_fortress(seed32, region_x, region_z)
+        return "fortress" if structure_name == "fortress" else None
+    elif struct_type == "either":
+        structure_name, bastion_type = sv.classify_bastion_or_fortress(seed32, region_x, region_z)
+        if structure_name == "bastion":
+            bastion_names = ["bridge", "treasure", "hoglin", "housing"]
+            variant_label = f"bastion:{bastion_names[bastion_type]}"
+            if variant_filter is not None and variant_filter >= 0 and bastion_type != variant_filter:
+                return None
+            return variant_label
+        else:
+            return "fortress"
+    elif struct_type == "portal" or struct_type == "ruined_portal":
+        portal_info = sv.classify_portal_variant(seed32, chunk_x, chunk_z)
+        variant_type = portal_info["variant_type"]
+        # Check filter: tuple (depth_filter, type_filter) where 0=any, 1=first, 2=second
+        if variant_filter is not None and isinstance(variant_filter, tuple):
+            depth_filter, type_filter = variant_filter
+            matches = True
+            
+            # Check depth filter
+            if depth_filter == 1 and not portal_info["underground"]:
+                matches = False  # Want underground but it's surface
+            elif depth_filter == 2 and portal_info["underground"]:
+                matches = False  # Want surface but it's underground
+            
+            # Check type filter
+            if type_filter == 1 and not portal_info["giant"]:
+                matches = False  # Want giant but it's normal
+            elif type_filter == 2 and portal_info["giant"]:
+                matches = False  # Want normal but it's giant
+            
+            if not matches:
+                return None  # Doesn't match filter
+        return variant_type
+    elif struct_type == "stronghold":
+        return "stronghold"
+    return None
+
+def _check_struct_positions(s32, c, biome_gen=None):
+    # Special handling for stronghold (doesn't use standard region-based structure params)
+    if c.get("struct_type") == "stronghold":
+        # Stronghold: find strongholds in the bounding box region
+        # Apply seed to biome generator if provided
+        if biome_gen:
+            biome_gen.apply_seed(s32)
+        
+        positions = []
+        strongholds = sv.find_strongholds_in_radius(s32, 0, 0, 5000, biome_gen)  # Search within ~5000 blocks
+        found = 0
+        for sh_x, sh_z in strongholds:
+            in_box = c["x1"] < sh_x < c["x2"] and c["z1"] < sh_z < c["z2"]
+            if in_box:
+                c["variants"][(sh_x, sh_z)] = "stronghold"
+                positions.append(((0, 0), (sh_x, sh_z), True))  # Use dummy region (0,0)
+                found += 1
+        return positions, found
+    
+    # Standard structure handling
     quadrants = c.get("specific_quadrants") or [(0, 0), (-1, 0), (0, -1), (-1, -1)]
     positions = []
     found = 0
@@ -397,6 +548,15 @@ def _check_struct_positions(s32, c):
                          c["offx"], c["offy"])
             bx, bz = pos
             in_box = c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"]
+            # Classify variant if applicable
+            if in_box and c.get("struct_type"):
+                try:
+                    chunk_x, chunk_z = bx >> 4, bz >> 4
+                    variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
+                    if variant:
+                        c["variants"][pos] = variant
+                except Exception:
+                    pass  # Silently skip variant classification errors
             positions.append(((rx, rz), pos, in_box))
             if in_box:
                 found += 1
@@ -409,6 +569,15 @@ def _check_struct_positions(s32, c):
             bx, bz = pos
             in_range = pos_spec[0] <= bx <= pos_spec[2] and pos_spec[1] <= bz <= pos_spec[3]
             in_box = in_range and (c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"])
+            # Classify variant if applicable
+            if in_box and c.get("struct_type"):
+                try:
+                    chunk_x, chunk_z = bx >> 4, bz >> 4
+                    variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
+                    if variant:
+                        c["variants"][pos] = variant
+                except Exception:
+                    pass
             positions.append(((rx, rz), pos, in_box))
             if in_box:
                 found += 1
@@ -422,6 +591,15 @@ def _check_struct_positions(s32, c):
             # Check if actual position matches any specified point
             matches_point = any(bx == px and bz == pz for px, pz in pos_spec)
             in_box = matches_point and (c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"])
+            # Classify variant if applicable
+            if in_box and c.get("struct_type"):
+                try:
+                    chunk_x, chunk_z = bx >> 4, bz >> 4
+                    variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
+                    if variant:
+                        c["variants"][actual_pos] = variant
+                except Exception:
+                    pass
             positions.append(((rx, rz), actual_pos, in_box))
             if in_box:
                 found += 1
@@ -508,12 +686,16 @@ def _format_result(seed_out, struct_constraints, all_positions,
     if n_struct == 1 and n_biome == 0:
         # ---- compact single-constraint format --------------------------------
         pb = (per_struct_biome[0] or {}) if per_struct_biome else {}
+        c = struct_constraints[0]
         parts = []
         for quad, pos, in_box in all_positions[0]:
-            if in_box and pos in pb:
-                parts.append(f"{str(pos):<10}  [{pb[pos]}]")
-            elif in_box:
-                parts.append(f"{str(pos):<10}")
+            if in_box:
+                label_parts = [str(pos)]
+                if pos in pb:
+                    label_parts.append(f"[{pb[pos]}]")
+                if pos in c.get("variants", {}):
+                    label_parts.append(f"({c['variants'][pos]})")
+                parts.append(" ".join(label_parts))
             else:
                 parts.append(f"{str(pos):<10}")
         return f"Seed {seed_out}: {' '.join(parts)}"
@@ -526,10 +708,12 @@ def _format_result(seed_out, struct_constraints, all_positions,
         for quad, pos, in_box in all_positions[i]:
             if not in_box:
                 continue
+            label_parts = [str(pos)]
             if pos in pb:
-                tokens.append(f"{pos}[{pb[pos]}]")
-            else:
-                tokens.append(str(pos))
+                label_parts.append(f"[{pb[pos]}]")
+            if pos in c.get("variants", {}):
+                label_parts.append(f"({c['variants'][pos]})")
+            tokens.append(" ".join(label_parts))
         lines.append(f"  [{c['label']}] {' '.join(tokens)}")
     for i, bc in enumerate(biome_constraints):
         name = per_biome_names[i] if per_biome_names else "?"
@@ -711,6 +895,51 @@ def seedsearch():
         emit(header, f)
         emit("", f)
 
+        # Check if primary constraint is stronghold (no JIT support)
+        if primary.get("struct_type") == "stronghold":
+            print("Note: stronghold search is handled via Python (no JIT kernel).\n", flush=True)
+            times = time.time()
+            total_matched = 0
+            s = seedstart
+            
+            while s < seedend:
+                s32 = s & MASK32
+                
+                # Check structural constraints
+                all_positions = []
+                pass_all = True
+                for i, c in enumerate(struct_constraints):
+                    positions, found = _check_struct_positions(s32, c, biome_gen)
+                    if found < c["occurence"]:
+                        pass_all = False
+                        break
+                    all_positions.append(positions)
+                
+                if pass_all:
+                    # Check biome constraints if generator exists
+                    if biome_constraints and not biome_gen:
+                        # Biome constraints specified but generator not initialized
+                        s += 1
+                        continue
+                    if biome_constraints and biome_gen and not _check_biomes(biome_gen, struct_constraints, all_positions, biome_constraints):
+                        s += 1
+                        continue
+                    
+                    # Seed passed all checks
+                    total_matched += 1
+                    result_str = _format_result(s32, struct_constraints, all_positions,
+                                               biome_constraints, None, None)
+                    emit(result_str, f)
+                
+                s += 1
+            
+            elapsed = time.time() - times
+            emit(f"\n# Finished.  Time: {elapsed:.2f}s", f)
+            emit(f"# Seeds checked: {seedend - seedstart}", f)
+            emit(f"# Matches found: {total_matched}", f)
+            return
+
+        # Standard JIT-based search for non-stronghold structures
         print("Compiling search kernel...", flush=True)
         scan_batch(0, 1,
                    primary["spacing"], primary["separation"], primary["salt"],
@@ -762,7 +991,7 @@ def seedsearch():
                 struct_ok = True
 
                 for i, c in enumerate(struct_constraints):
-                    positions, found = _check_struct_positions(s32, c)
+                    positions, found = _check_struct_positions(s32, c, biome_gen)
                     all_positions.append(positions)
                     if found < c["occurence"]:
                         struct_ok = False
