@@ -1,6 +1,5 @@
 # Quick Start
 Go to the Releases section at https://github.com/MC-dev-klia/MC-Seed-Search/releases/tag/v2.0.0 and download the latest .exe file. No additional setup is required.
-
 # Minecraft Bedrock Structure Seed Searcher - Technical Guide
 
 This tool brute-forces Minecraft Bedrock seeds to find worlds where structures generate at specific coordinates. It implements the exact same RNG algorithms Minecraft uses for structure placement.
@@ -116,3 +115,4 @@ Combines multiple structure requirements:
 - **Numba JIT**: Compiles structure search kernels
 - **Cubiomes Library**: Biome noise generation
 - **Python 3.12+**: Modern Python features
+- **MCBE-1.18-Seed-Finder**: Helped create variant filters
