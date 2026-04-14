@@ -357,17 +357,6 @@ def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation,
     """
     Return the block-level (x, z) position of a structure candidate in
     region (rx, rz) for the given world seed and structure RNG constants.
-
-    Parameters
-    ----------
-    world_seed       : 32-bit world seed
-    rx, rz           : region coordinates (integers)
-    spacing          : region size in chunks
-    separation       : minimum separation in chunks
-    salt             : structure-specific RNG salt
-    linear_separation: if True uses the averaged two-draw algorithm
-    offx, offy       : intra-chunk block offset added to the chunk origin
-                       (default 8 = chunk centre, Bedrock's standard placement)
     """
     spawn_range = spacing - separation
     mixed  = (world_seed + rx * 341873128712 + rz * 132897987541 + salt) & ((1 << 64) - 1)

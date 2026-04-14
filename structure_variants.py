@@ -43,9 +43,11 @@ def is_village_biome(biome_id):
 def region_seed(world_seed, region_x, region_z, salt):
     """
     Calculate the region seed for a given world seed, region coordinates,
-    and structure salt.
+    and structure salt (used for bastion/fortress/portal).
+    
+    Formula: regZ * 341873128712 + regX * 132897987541 + worldSeed + salt
     """
-    mixed = (world_seed + region_x * -1724254968 + region_z * -245998635 + salt) & 0xffffffff
+    mixed = (world_seed + region_x * 341873128712 + region_z * 132897987541 + salt) & ((1 << 64) - 1)
     return mixed
 
 
@@ -91,12 +93,14 @@ def classify_bastion_or_fortress(world_seed, region_x, region_z):
                          None if fortress
     """
     BASTION_SALT = 30084232
-    
-    reg_seed = region_seed(world_seed, region_x, region_z, BASTION_SALT)
+    reg_seed = region_seed(world_seed, region_x, region_z, BASTION_SALT) & 0xffffffff
     mt = mt_init(reg_seed)
     idx = N
     
-    # First call determines bastion vs fortress
+    # Third call determines bastion vs fortress
+    x1, idx = mt_extract(mt, idx)
+    y1, idx = mt_extract(mt, idx)
+    #print(f"Debug: region_seed={reg_seed}, x1={16 * (x1 % 26)}, y1={16 * (y1 % 26)}")
     check_val, idx = mt_extract(mt, idx)
     is_bastion = (check_val % 6) >= 2
     

@@ -440,8 +440,8 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
     Returns: (variant_label, matches_filter) or None if doesn't match filter
     """
     # Compute region coordinates from chunk coordinates
-    region_x = chunk_x // spacing if spacing else 0
-    region_z = chunk_z // spacing if spacing else 0
+    region_x = 0 if chunk_x >= 0 else -1
+    region_z = 0 if chunk_z >= 0 else -1
     
     if struct_type == "bastion":
         structure_name, bastion_type = sv.classify_bastion_or_fortress(seed32, region_x, region_z)
