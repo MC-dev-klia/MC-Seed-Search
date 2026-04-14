@@ -138,7 +138,7 @@ PRESET_NAMES = [
 # ---------------------------------------------------------------------------
 # UI helpers — constraint input
 # ---------------------------------------------------------------------------
-
+Error=16
 def _prompt_rng():
     print()
     print("  Available presets:")
@@ -365,10 +365,12 @@ def _prompt_structure_constraint(idx):
 
     if needs_biome_gen:
         ans = input(
-            "  4-corner biome check? (y/n) [n]\n"
+            "  4-corner biome check? (y/n) [n]"
         ).strip().lower()
         corner_check = ans in ("y", "yes")
         print("    4-corner check ON." if corner_check else "    4-corner check OFF.")
+        if corner_check:
+            Error=int(input("    Error margin for corner check [16]: ").strip() or "16")
 
     return {
         "type":        "structure",
@@ -571,7 +573,7 @@ def _check_struct_positions(s32, c, biome_gen=None):
     return positions, found
 
 
-def _biome_passes(gen, pos, biomes, corner_check, offx, offy):
+def _biome_passes(gen, pos, biomes, corner_check, offx, offy, error):
     bx, bz = pos
     bid  = gen.biome_at_block(bx, bz)
     name = gen.biome_name(bid)
@@ -582,9 +584,9 @@ def _biome_passes(gen, pos, biomes, corner_check, offx, offy):
         cz0 = bz - offy
         if not (
             gen.biome_at_block(cx0,      cz0)      in biomes
-            and gen.biome_at_block(cx0 + 16, cz0)      in biomes
-            and gen.biome_at_block(cx0,      cz0 + 16) in biomes
-            and gen.biome_at_block(cx0 + 16, cz0 + 16) in biomes
+            and gen.biome_at_block(cx0 + error, cz0)      in biomes
+            and gen.biome_at_block(cx0,      cz0 + error) in biomes
+            and gen.biome_at_block(cx0 + error, cz0 + error) in biomes
         ):
             return False, name
     return True, name
@@ -614,7 +616,7 @@ def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
                 seen += 1
                 continue
             ok, name = _biome_passes(gen, pos, biomes, c["corner_check"],
-                                     c["offx"], c["offy"])
+                                     c["offx"], c["offy"], Error)
             pos_biome[pos] = name
             if ok:
                 found += 1
@@ -766,7 +768,7 @@ def seedsearch():
     if needs_biome_gen:
         print()
         ans = input(
-            "Enable 32-bit structure scan with 32-bit biome expansion?\n"
+            "Enable 32-bit structure scan with 32-bit biome expansion?"
         ).strip().lower()
         expand_mode = ans in ("y", "yes")
         if expand_mode:
