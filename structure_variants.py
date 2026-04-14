@@ -136,7 +136,8 @@ def classify_portal_variant(world_seed, chunk_x, chunk_z):
     chunk_seed_val = chunk_seed(world_seed, chunk_x, chunk_z)
     mt = mt_init(chunk_seed_val)
     idx = N
-    
+    x1, idx = mt_extract(mt, idx)
+    y1, idx = mt_extract(mt, idx)
     # Extract properties in order
     underground_raw, idx = mt_extract(mt, idx)
     underground = (underground_raw & 0xffffffff) / (2**32) < 0.5
@@ -197,7 +198,7 @@ def check_village_at_chunk(world_seed, chunk_x, chunk_z):
     reg_x = int(chunk_x // VILLAGE_SPACING)
     reg_z = int(chunk_z // VILLAGE_SPACING)
     
-    reg_seed = region_seed(world_seed, reg_x, reg_z, VILLAGE_SALT)
+    reg_seed = region_seed(world_seed, reg_x, reg_z, VILLAGE_SALT) & 0xffffffff
     mt = mt_init(reg_seed)
     idx = N
     
