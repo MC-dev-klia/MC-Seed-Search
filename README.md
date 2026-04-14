@@ -1,5 +1,5 @@
 # Quick Start
-Go to the Releases section and download the latest .exe file. No additional setup is required.
+Go to the Releases section at https://github.com/MC-dev-klia/MC-Seed-Search/releases/tag/v2.0.0 and download the latest .exe file. No additional setup is required.
 
 # Minecraft Bedrock Structure Seed Searcher - Technical Guide
 
