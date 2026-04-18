@@ -136,8 +136,6 @@ def classify_portal_variant(world_seed, chunk_x, chunk_z):
     chunk_seed_val = chunk_seed(world_seed, chunk_x, chunk_z)
     mt = mt_init(chunk_seed_val)
     idx = N
-    x1, idx = mt_extract(mt, idx)
-    y1, idx = mt_extract(mt, idx)
     # Extract properties in order
     underground_raw, idx = mt_extract(mt, idx)
     underground = (underground_raw & 0xffffffff) / (2**32) < 0.5
