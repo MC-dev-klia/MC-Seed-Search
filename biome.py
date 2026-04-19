@@ -1,10 +1,5 @@
 """
 biome.py — Minecraft biome lookups via cubiomes (https://github.com/Cubitect/cubiomes)
-
-Wraps the compiled cubiomes shared library to provide fast biome queries for
-any seed, MC version, and dimension.  Includes the valid-biome tables for all
-biome-gated Overworld structures and a single interactive prompt that accepts
-either a structure preset or a custom biome list.
 """
 
 import ctypes
@@ -197,15 +192,7 @@ _ALIASES: dict[str, str] = {
 
 BIOME_NAMES: dict[int, str] = {v: k for k, v in BIOME_IDS.items()}
 
-# ---------------------------------------------------------------------------
-# Structure → valid overworld biomes
-#
-# Each entry is a frozenset of biome IDs that allow the structure to spawn.
-# None means the structure has no biome restriction (generates anywhere).
-#
-# NOTE: bastion_fortress uses the Nether (same salt 30084232 for both).
-#       Biome noise does not gate them; they are excluded from this table.
-# ---------------------------------------------------------------------------
+
 STRUCTURE_VALID_BIOMES: dict[str, frozenset[int] | None] = {
     # Village — plains, desert, savanna, taiga, snowy variants
     "village": frozenset({
@@ -395,13 +382,8 @@ class BiomeGenerator:
     def get_biome(self, x: int, y: int, z: int, scale: int = 4) -> int:
         """
         Return the biome ID at position (x, y, z).
-
         scale=4  → biome/chunk coordinates (fast, ~4-block granularity) [default]
         scale=1  → exact block coordinates (slower)
-
-        For pre-1.18 (layer-based), y is ignored.
-        For 1.18+ (noise-based), y matters; use 64 for sea-level surface.
-        When using scale=4 pass biome-coordinate values (block // 4).
         """
         return _lib.getBiomeAt(self._ptr, scale, x, y, z)
 
@@ -455,17 +437,6 @@ class BiomeGenerator:
 def prompt_biome_validation() -> frozenset[int] | None:
     """
     Ask the user for a biome filter applied at each structure candidate position.
-
-    The user enters ONE of:
-      - A structure name  → uses that structure's preset valid biome list
-      - Biome name(s)     → comma-separated custom list
-      - blank             → no biome filter
-
-    Returns a frozenset of allowed biome IDs, or None if skipped.
-    Always uses MC 1.21 noise (hardcoded).
-
-    NOTE: Bastion Remnants and Nether Fortresses are Nether structures —
-          leave this blank when searching for them.
     """
     structure_names = ", ".join(STRUCTURE_VALID_BIOMES.keys())
     print()

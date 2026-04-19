@@ -1,12 +1,6 @@
 """
 structure_variants.py — Classification of structure variants for Bedrock 1.21+
 
-Implements detection and classification of:
-  - Bastion vs Nether Fortress (and bastion sub-types)
-  - Ruined Portal variants (underground, surface, giant, normal)
-  - Stronghold enumeration and placement
-  - Portal properties (underground, giant, rotation, mirror)
-
 Algorithm references: https://github.com/maehy/MCBE-1.18-Seed-Finder
 """
 
@@ -14,12 +8,7 @@ import math
 import numpy as np
 from structure import mt_init, mt_extract, N
 
-
-# ---------------------------------------------------------------------------
-# Village biome compatibility
-# ---------------------------------------------------------------------------
-
-# Village-compatible biomes (for stronghold validation)
+# Village-compatible biomes
 VILLAGE_BIOME_IDS = frozenset({
     1,    # plains
     2,    # desert
@@ -43,7 +32,7 @@ def is_village_biome(biome_id):
 def region_seed(world_seed, region_x, region_z, salt):
     """
     Calculate the region seed for a given world seed, region coordinates,
-    and structure salt (used for bastion/fortress/portal).
+    and structure salt.
     
     Formula: regZ * 341873128712 + regX * 132897987541 + worldSeed + salt
     """
@@ -142,7 +131,6 @@ def classify_portal_variant(world_seed, chunk_x, chunk_z):
     underground = Tofloat(underground_raw) < 0.5
     
     airpocket_raw, idx = mt_extract(mt, idx)
-    # Airpocket only affects state; its value isn't directly used for classification
     airpocket = Tofloat(airpocket_raw) < 0.5
     
     rotation_raw, idx = mt_extract(mt, idx)
@@ -187,7 +175,6 @@ def classify_portal_variant(world_seed, chunk_x, chunk_z):
 def check_village_at_chunk(world_seed, chunk_x, chunk_z):
     """
     Check if a village exists at a specific chunk coordinate.
-    Used by stronghold placement algorithm.
     """
     VILLAGE_SALT = 10387312
     VILLAGE_SPACING = 34
@@ -344,5 +331,4 @@ def _is_stronghold_valid_biome(biome_gen, block_x, block_z):
         biome_id = biome_gen.biome_at_block(block_x, block_z)
         return is_village_biome(biome_id)
     except Exception:
-        # If biome check fails, assume invalid to avoid false positives
         return False
