@@ -66,7 +66,7 @@ def chunk_seed_rng(world_seed, chunk_x, chunk_z):
     # Ensure odd multipliers
     xMul = int(xMul_raw) | 1
     zMul = int(zMul_raw) | 1
-    return (chunk_x * xMul + chunk_z * zMul) ^ world_seed
+    return xMul, zMul
 
 
 def chunk_seed(world_seed, chunk_x, chunk_z):
