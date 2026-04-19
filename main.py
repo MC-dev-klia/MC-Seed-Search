@@ -540,7 +540,7 @@ def _check_struct_positions(s32, c, biome_gen=None):
                         in_box = False
                     if variant != None:
                         c["variants"][pos] = variant
-                except Exception:
+                except EOFError:
                     print("Exception")
                     pass  # Silently skip variant classification errors
             positions.append(((rx, rz), pos, in_box))
@@ -564,7 +564,7 @@ def _check_struct_positions(s32, c, biome_gen=None):
                         in_box = False 
                     if variant != None:
                         c["variants"][pos] = variant
-                except Exception:
+                except EOFError:
                     pass
             positions.append(((rx, rz), pos, in_box))
             if in_box:

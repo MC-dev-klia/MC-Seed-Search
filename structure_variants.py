@@ -58,11 +58,12 @@ def chunk_seed_rng(world_seed, chunk_x, chunk_z):
     
     Returns: (xMul, zMul) pair used to compute chunk seed.
     """
-    mt = mt_init(world_seed & 0xffffffff)
+    mt = mt_init(world_seed)
     idx = N
     xMul_raw, idx = mt_extract(mt, idx)
     zMul_raw, idx = mt_extract(mt, idx)
-    
+    xMul_raw >>= 1
+    zMul_raw >>= 1
     # Ensure odd multipliers
     xMul = int(xMul_raw) | 1
     zMul = int(zMul_raw) | 1
@@ -75,7 +76,8 @@ def chunk_seed(world_seed, chunk_x, chunk_z):
     """
     xMul, zMul = chunk_seed_rng(world_seed, chunk_x, chunk_z)
     chunk_seed_val = (chunk_x * xMul + chunk_z * zMul) ^ world_seed
-    return chunk_seed_val & 0xffffffff
+    chunk_seed_val &= 0xffffffff
+    return chunk_seed_val
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +118,7 @@ def classify_bastion_or_fortress(world_seed, region_x, region_z):
 # ---------------------------------------------------------------------------
 # Ruined Portal variant detection
 # ---------------------------------------------------------------------------
-
+Tofloat = lambda x: (x & 0xffffffff) / (2**32)
 def classify_portal_variant(world_seed, chunk_x, chunk_z):
     """
     Classify a ruined portal by its properties: underground, airpocket, rotation,
@@ -137,21 +139,20 @@ def classify_portal_variant(world_seed, chunk_x, chunk_z):
     idx = N
     # Extract properties in order
     underground_raw, idx = mt_extract(mt, idx)
-    underground = (underground_raw & 0xffffffff) / (2**32) < 0.5
+    underground = Tofloat(underground_raw) < 0.5
     
     airpocket_raw, idx = mt_extract(mt, idx)
     # Airpocket only affects state; its value isn't directly used for classification
-    airpocket = (airpocket_raw & 0xffffffff) / (2**32) < 0.5
+    airpocket = Tofloat(airpocket_raw) < 0.5
     
     rotation_raw, idx = mt_extract(mt, idx)
     rotation = rotation_raw % 4
     
     mirror_raw, idx = mt_extract(mt, idx)
-    mirror = (mirror_raw & 0xffffffff) / (2**32) >= 0.5
+    mirror = Tofloat(mirror_raw) >= 0.5
     
     giant_raw, idx = mt_extract(mt, idx)
-    giant = (giant_raw & 0xffffffff) / (2**32) < 0.05
-    
+    giant = Tofloat(giant_raw) < 0.05
     if giant:
         variant_num = (mt_extract(mt, idx)[0] % 3) + 1
         variant = f"giant_portal_{variant_num}"
