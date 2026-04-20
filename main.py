@@ -1,23 +1,6 @@
 """
 main.py — Seed search loop with layered constraints, bounding-box bounds,
           biome point-checks, and 32-bit expansion mode.
-
-Constraint types
-----------------
-  structure  — uses the Bedrock MT RNG to find candidate block positions in
-               four adjacent regions and checks them against a bounding box.
-               Optionally validates biome at each in-box position.
-
-  biome      — checks the biome at a fixed world coordinate (x, y, z) against
-               an allowed set.  Useful for filtering seeds where a particular
-               spot must be a specific biome regardless of structure placement.
-
-Ordering for performance
-------------------------
-  The FIRST structure constraint is processed by the fast numba JIT kernel.
-  All subsequent constraints (structure or biome) are checked at Python level
-  only for seeds that already passed the first constraint.  More selective
-  constraints entered earlier = faster overall scan.
 """
 
 import sys
@@ -126,7 +109,6 @@ PRESETS = {
     "witch hut":        (32,  8, 14357617,  False, None),
     "swamp":            (32,  8, 14357617,  False, None),
     "igloo":            (32,  8, 14357617,  False, None),
-    "ice house":        (32,  8, 14357617,  False, None),
 }
 
 PRESET_NAMES = [
@@ -205,8 +187,7 @@ def _prompt_structure_constraint(idx):
         except ValueError:
             pass
     elif struct_type == "portal" or struct_type == "ruined_portal":
-        # Question 1: Underground vs Surface
-        print("  Question 1 - Depth:")
+        print("  Select depth:")
         print("    0=any, 1=underground, 2=surface")
         depth_input = input("  Depth filter [0]: ").strip() or "0"
         try:
@@ -216,8 +197,7 @@ def _prompt_structure_constraint(idx):
         except ValueError:
             depth_idx = 0
         
-        # Question 2: Giant vs Normal
-        print("  Question 2 - Portal type:")
+        print("  Select portal type:")
         print("    0=any, 1=giant, 2=normal")
         type_input = input("  Portal type [0]: ").strip() or "0"
         try:
@@ -233,7 +213,6 @@ def _prompt_structure_constraint(idx):
         else:
             variant_filter = None
     elif struct_type == "fortress":
-        # Fortress has no subtypes
         pass
 
     specific_quadrants = None
@@ -243,7 +222,7 @@ def _prompt_structure_constraint(idx):
     occ_raw = input("  Min occurrence [1]: ").strip()
     occ = int(occ_raw) if occ_raw else 1
 
-    # Skip quadrant-specific prompts for stronghold (doesn't use standard quadrant placement)
+    # Skip quadrant-specific prompts for stronghold
     if occ < 4 and struct_type != "stronghold":
         ans = input(
             "  Specify specific quadrants and positions? (y/n) [n]"
@@ -455,7 +434,6 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
                 return None  # Doesn't match filter
             return variant_label
         else:
-            # It's a fortress, not bastion
             return None
     elif struct_type == "fortress":
         structure_name, _ = sv.classify_bastion_or_fortress(seed32, region_x, region_z)
@@ -480,15 +458,15 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
             
             # Check depth filter
             if depth_filter == 1 and not portal_info["underground"]:
-                matches = False  # Want underground but it's surface
+                matches = False  
             elif depth_filter == 2 and portal_info["underground"]:
-                matches = False  # Want surface but it's underground
+                matches = False 
             
             # Check type filter
             if type_filter == 1 and not portal_info["giant"]:
-                matches = False  # Want giant but it's normal
+                matches = False 
             elif type_filter == 2 and portal_info["giant"]:
-                matches = False  # Want normal but it's giant
+                matches = False 
             
             if not matches:
                 return None  # Doesn't match filter
@@ -498,7 +476,7 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
     return None
 
 def _check_struct_positions(s32, c, biome_gen=None):
-    # Special handling for stronghold (doesn't use standard region-based structure params)
+    # Special handling for stronghold 
     if c.get("struct_type") == "stronghold":
         # Stronghold: find strongholds in the bounding box region
         # Apply seed to biome generator if provided
@@ -540,9 +518,9 @@ def _check_struct_positions(s32, c, biome_gen=None):
                         in_box = False
                     if variant != None:
                         c["variants"][pos] = variant
-                except Exception:
+                except EOFError:
                     print("Exception")
-                    pass  # Silently skip variant classification errors
+                    pass  
             positions.append(((rx, rz), pos, in_box))
             if in_box:
                 found += 1
@@ -564,7 +542,7 @@ def _check_struct_positions(s32, c, biome_gen=None):
                         in_box = False 
                     if variant != None:
                         c["variants"][pos] = variant
-                except Exception:
+                except EOFError:
                     pass
             positions.append(((rx, rz), pos, in_box))
             if in_box:

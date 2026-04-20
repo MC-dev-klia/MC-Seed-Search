@@ -1,12 +1,6 @@
 """
 structure_variants.py — Classification of structure variants for Bedrock 1.21+
 
-Implements detection and classification of:
-  - Bastion vs Nether Fortress (and bastion sub-types)
-  - Ruined Portal variants (underground, surface, giant, normal)
-  - Stronghold enumeration and placement
-  - Portal properties (underground, giant, rotation, mirror)
-
 Algorithm references: https://github.com/maehy/MCBE-1.18-Seed-Finder
 """
 
@@ -14,12 +8,7 @@ import math
 import numpy as np
 from structure import mt_init, mt_extract, N
 
-
-# ---------------------------------------------------------------------------
-# Village biome compatibility
-# ---------------------------------------------------------------------------
-
-# Village-compatible biomes (for stronghold validation)
+# Village-compatible biomes
 VILLAGE_BIOME_IDS = frozenset({
     1,    # plains
     2,    # desert
@@ -43,7 +32,7 @@ def is_village_biome(biome_id):
 def region_seed(world_seed, region_x, region_z, salt):
     """
     Calculate the region seed for a given world seed, region coordinates,
-    and structure salt (used for bastion/fortress/portal).
+    and structure salt.
     
     Formula: regZ * 341873128712 + regX * 132897987541 + worldSeed + salt
     """
@@ -58,11 +47,12 @@ def chunk_seed_rng(world_seed, chunk_x, chunk_z):
     
     Returns: (xMul, zMul) pair used to compute chunk seed.
     """
-    mt = mt_init(world_seed & 0xffffffff)
+    mt = mt_init(world_seed)
     idx = N
     xMul_raw, idx = mt_extract(mt, idx)
     zMul_raw, idx = mt_extract(mt, idx)
-    
+    xMul_raw >>= 1
+    zMul_raw >>= 1
     # Ensure odd multipliers
     xMul = int(xMul_raw) | 1
     zMul = int(zMul_raw) | 1
@@ -75,7 +65,8 @@ def chunk_seed(world_seed, chunk_x, chunk_z):
     """
     xMul, zMul = chunk_seed_rng(world_seed, chunk_x, chunk_z)
     chunk_seed_val = (chunk_x * xMul + chunk_z * zMul) ^ world_seed
-    return chunk_seed_val & 0xffffffff
+    chunk_seed_val &= 0xffffffff
+    return chunk_seed_val
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +91,6 @@ def classify_bastion_or_fortress(world_seed, region_x, region_z):
     # Third call determines bastion vs fortress
     x1, idx = mt_extract(mt, idx)
     y1, idx = mt_extract(mt, idx)
-    #print(f"Debug: region_seed={reg_seed}, x1={16 * (x1 % 26)}, y1={16 * (y1 % 26)}")
     check_val, idx = mt_extract(mt, idx)
     is_bastion = (check_val % 6) >= 2
     
@@ -117,7 +107,7 @@ def classify_bastion_or_fortress(world_seed, region_x, region_z):
 # ---------------------------------------------------------------------------
 # Ruined Portal variant detection
 # ---------------------------------------------------------------------------
-
+Tofloat = lambda x: (x & 0xffffffff) / (2**32)
 def classify_portal_variant(world_seed, chunk_x, chunk_z):
     """
     Classify a ruined portal by its properties: underground, airpocket, rotation,
@@ -136,25 +126,21 @@ def classify_portal_variant(world_seed, chunk_x, chunk_z):
     chunk_seed_val = chunk_seed(world_seed, chunk_x, chunk_z)
     mt = mt_init(chunk_seed_val)
     idx = N
-    x1, idx = mt_extract(mt, idx)
-    y1, idx = mt_extract(mt, idx)
     # Extract properties in order
     underground_raw, idx = mt_extract(mt, idx)
-    underground = (underground_raw & 0xffffffff) / (2**32) < 0.5
+    underground = Tofloat(underground_raw) < 0.5
     
     airpocket_raw, idx = mt_extract(mt, idx)
-    # Airpocket only affects state; its value isn't directly used for classification
-    airpocket = (airpocket_raw & 0xffffffff) / (2**32) < 0.5
+    airpocket = Tofloat(airpocket_raw) < 0.5
     
     rotation_raw, idx = mt_extract(mt, idx)
     rotation = rotation_raw % 4
     
     mirror_raw, idx = mt_extract(mt, idx)
-    mirror = (mirror_raw & 0xffffffff) / (2**32) >= 0.5
+    mirror = Tofloat(mirror_raw) >= 0.5
     
     giant_raw, idx = mt_extract(mt, idx)
-    giant = (giant_raw & 0xffffffff) / (2**32) < 0.05
-    
+    giant = Tofloat(giant_raw) < 0.05
     if giant:
         variant_num = (mt_extract(mt, idx)[0] % 3) + 1
         variant = f"giant_portal_{variant_num}"
@@ -189,7 +175,6 @@ def classify_portal_variant(world_seed, chunk_x, chunk_z):
 def check_village_at_chunk(world_seed, chunk_x, chunk_z):
     """
     Check if a village exists at a specific chunk coordinate.
-    Used by stronghold placement algorithm.
     """
     VILLAGE_SALT = 10387312
     VILLAGE_SPACING = 34
@@ -346,5 +331,4 @@ def _is_stronghold_valid_biome(biome_gen, block_x, block_z):
         biome_id = biome_gen.biome_at_block(block_x, block_z)
         return is_village_biome(biome_id)
     except Exception:
-        # If biome check fails, assume invalid to avoid false positives
         return False
