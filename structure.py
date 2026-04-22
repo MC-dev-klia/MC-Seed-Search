@@ -368,6 +368,11 @@ def scan_batch(seeds_start, seeds_end, spacing, separation, salt,
     return _scan_batch_standard(*args)
 
 
+# (Stronghold batch prefilter `_scan_batch_stronghold` and its Python wrapper
+# `scan_batch_stronghold` are defined at the bottom of this file, after the
+# helper kernels they depend on.)
+
+
 def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation,
            offx=8, offy=8):
     """Block-level (x, z) position of a structure candidate in region (rx, rz)."""
@@ -752,3 +757,86 @@ def find_strongholds_in_box(world_seed, x1, z1, x2, z2,
                 strongholds.append((sh_x, sh_z))
 
     return strongholds
+
+
+# ---------------------------------------------------------------------------
+# Stronghold batch prefilter (parallel JIT)
+# ---------------------------------------------------------------------------
+@nb.njit(cache=True, parallel=True, boundscheck=False)
+def _scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2,
+                           occurence, skip_quasi):
+    """Parallel JIT prefilter: returns seeds with >=occurence strongholds
+    inside the (x1, z1)-(x2, z2) bounding box.  Biome-blind — biome filtering
+    is reapplied at Python level on the much smaller candidate list.
+
+    Reuses the same `_quasi_strongholds_jit` and `_grid_strongholds_jit`
+    helpers used by the per-seed Python wrappers, so MT19937 semantics are
+    bit-for-bit identical.  The batch parallelism comes from numba's
+    `prange` distributing seeds across threads.
+    """
+    n = seeds_end - seeds_start
+    is_hit = np.zeros(n, dtype=np.bool_)
+
+    GRID  = np.int64(STRONGHOLD_GRID_SIZE)
+    SCALE = GRID * np.int64(16)
+    MASK  = np.int64(0xffffffff)
+    occ   = np.int32(occurence)
+
+    bx1 = np.int64(x1); bx2 = np.int64(x2)
+    bz1 = np.int64(z1); bz2 = np.int64(z2)
+
+    gx_min = bx1 // SCALE - np.int64(1)
+    gx_max = bx2 // SCALE + np.int64(1)
+    gz_min = bz1 // SCALE - np.int64(1)
+    gz_max = bz2 // SCALE + np.int64(1)
+
+    for ii in nb.prange(n):
+        s32 = (np.int64(seeds_start) + np.int64(ii)) & MASK
+        found = np.int32(0)
+
+        if not skip_quasi:
+            q_chunks, q_count = _quasi_strongholds_jit(s32)
+            for qi in range(q_count):
+                sh_x = q_chunks[qi, 0] * np.int64(16) + np.int64(8)
+                sh_z = q_chunks[qi, 1] * np.int64(16) + np.int64(8)
+                if bx1 < sh_x < bx2 and bz1 < sh_z < bz2:
+                    found += np.int32(1)
+                    if found >= occ:
+                        break
+
+        if found < occ:
+            g_chunks, g_count = _grid_strongholds_jit(
+                s32, gx_min, gx_max, gz_min, gz_max
+            )
+            for gi in range(g_count):
+                sh_x = g_chunks[gi, 0] * np.int64(16) + np.int64(8)
+                sh_z = g_chunks[gi, 1] * np.int64(16) + np.int64(8)
+                if bx1 < sh_x < bx2 and bz1 < sh_z < bz2:
+                    found += np.int32(1)
+                    if found >= occ:
+                        break
+
+        if found >= occ:
+            is_hit[ii] = True
+
+    count = np.int64(0)
+    for ii in range(n):
+        if is_hit[ii]:
+            count += np.int64(1)
+    result = np.empty(count, dtype=np.int64)
+    ci = np.int64(0)
+    for ii in range(n):
+        if is_hit[ii]:
+            result[ci] = np.int64(seeds_start) + np.int64(ii)
+            ci += np.int64(1)
+    return result
+
+
+def scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2,
+                          occurence, skip_quasi):
+    """Python wrapper around the parallel stronghold batch prefilter."""
+    return _scan_batch_stronghold(
+        int(seeds_start), int(seeds_end),
+        int(x1), int(z1), int(x2), int(z2),
+        int(occurence), bool(skip_quasi),
+    )
