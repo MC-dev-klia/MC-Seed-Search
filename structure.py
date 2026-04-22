@@ -2,10 +2,14 @@
 structure.py — Bedrock Edition structural position calculations.
 
 Implements the Mersenne Twister RNG used by Minecraft Bedrock to determine
-where structures are placed within each region, and the getpos() function
-that combines the world seed, region coordinates, and RNG constants into a
-block-level structure position.
+where structures are placed within each region, the getpos() function that
+combines the world seed, region coordinates, and RNG constants into a
+block-level structure position, and JIT-compiled variant classifiers
+(bastion vs fortress, ruined portal variants, village placement, and
+stronghold placement) ported from MCBE-1.18-Seed-Finder.
 """
+
+import math
 
 import numba as nb
 import numpy as np
@@ -22,6 +26,42 @@ UPPER_MASK = 0x80000000
 LOWER_MASK = 0x7fffffff
 
 
+# ---------------------------------------------------------------------------
+# Region / structure salt constants
+# ---------------------------------------------------------------------------
+R_X_CONST = 341873128712
+R_Z_CONST = 132897987541
+
+BASTION_SALT       = 30084232
+VILLAGE_SALT       = 10387312
+VILLAGE_SPACING    = 34
+VILLAGE_SEPARATION = 26
+
+STRONGHOLD_GRID_SIZE = 200          # chunks
+STRONGHOLD_XMUL      = -1683231919
+STRONGHOLD_ZMUL      = -1100435783
+STRONGHOLD_SALT      = 97858791
+
+# Village-compatible biomes (used for stronghold biome filtering)
+VILLAGE_BIOME_IDS = frozenset({
+    1,    # plains
+    2,    # desert
+    5,    # taiga
+    30,   # snowy_taiga
+    35,   # savanna
+    129,  # sunflower_plains
+    177,  # meadow
+})
+
+
+def is_village_biome(biome_id):
+    """Check if a biome ID is compatible with village (and stronghold) spawning."""
+    return biome_id in VILLAGE_BIOME_IDS
+
+
+# ---------------------------------------------------------------------------
+# Mersenne Twister primitives
+# ---------------------------------------------------------------------------
 @nb.njit(cache=True)
 def mt_init(seed32):
     """Initialise a 624-element MT state from a 32-bit seed."""
@@ -64,17 +104,17 @@ def mt_extract(mt, idx):
     return y, idx + 1
 
 
-
+# ---------------------------------------------------------------------------
+# Standard / linear-separation batch scanners (primary structure constraint)
+# ---------------------------------------------------------------------------
 @nb.njit(cache=True, parallel=True, boundscheck=False)
 def _scan_batch_standard(seeds_start, seeds_end, spacing, separation, salt,
                          radius, occurence):
-    """
-    Specialised scanner for linear_sep=False (standard two-draw placement).
-    """
+    """Specialised scanner for linear_sep=False (standard two-draw placement)."""
     spawn_range = spacing - separation
     n           = seeds_end - seeds_start
-    R_X         = np.int64(341873128712)
-    R_Z         = np.int64(132897987541)
+    R_X         = np.int64(R_X_CONST)
+    R_Z         = np.int64(R_Z_CONST)
     MULT        = np.int64(0x6c078965)
     MATRIX_A_   = np.uint32(0x9908b0df)
     UPPER_MASK_ = np.uint32(0x80000000)
@@ -86,16 +126,12 @@ def _scan_batch_standard(seeds_start, seeds_end, spacing, separation, salt,
     rad         = np.int64(radius)
     occ         = np.int32(occurence)
 
-    # Precompute per-region seed adjustments (salt ± R_X ± R_Z).
-    # Eliminates rx*R_X + rz*R_Z + salt arithmetic inside the hot loop.
     sa = np.int64(salt)
     reg_s0 = sa
     reg_s1 = sa - R_X
     reg_s2 = sa - R_Z
     reg_s3 = sa - R_X - R_Z
 
-    # Precompute per-region block-coordinate bases (rx*sp, rz*sp in chunks).
-    # rx is 0 or -1; rz is 0 or -1; multiply by 16 to convert chunks→blocks.
     neg_sp16 = -sp * np.int64(16)
     bx_base0 = np.int64(0)
     bx_base1 = neg_sp16
@@ -106,15 +142,12 @@ def _scan_batch_standard(seeds_start, seeds_end, spacing, separation, salt,
     bz_base2 = neg_sp16
     bz_base3 = neg_sp16
 
-    # Phase 1 — parallel mark pass
     is_hit = np.zeros(n, dtype=np.bool_)
 
     for ii in nb.prange(n):
         world_seed = np.int64(seeds_start) + np.int64(ii)
         found      = np.int32(0)
 
-        # MT buffer: only indices 0..M+1 (=398) are needed for v0 and v1.
-        # v0 twist reads mt[0], mt[1], mt[M];  v1 reads mt[1], mt[2], mt[M+1].
         mt = np.empty(M + 2, dtype=np.uint32)
 
         for region in range(4):
@@ -144,7 +177,6 @@ def _scan_batch_standard(seeds_start, seeds_end, spacing, separation, salt,
                     & np.int64(0xFFFFFFFF)
                 )
 
-            # --- Inline twist+temper for index 0 ---
             y  = (mt[0] & UPPER_MASK_) | (mt[1] & LOWER_MASK_)
             v0 = mt[M] ^ (y >> np.uint32(1))
             if y & np.uint32(1):
@@ -154,7 +186,6 @@ def _scan_batch_standard(seeds_start, seeds_end, spacing, separation, salt,
             v0 ^= (v0 << np.uint32(15)) & T2
             v0 ^= v0 >> np.uint32(18)
 
-            # --- Inline twist+temper for index 1 ---
             y  = (mt[1] & UPPER_MASK_) | (mt[2] & LOWER_MASK_)
             v1 = mt[M + 1] ^ (y >> np.uint32(1))
             if y & np.uint32(1):
@@ -167,21 +198,18 @@ def _scan_batch_standard(seeds_start, seeds_end, spacing, separation, salt,
             off_x = np.int64(v0) % sr
             off_z = np.int64(v1) % sr
 
-            # bx_b = rx * spacing * 16  (precomputed); off_x already in chunks
             bx = bx_b + off_x * np.int64(16) + np.int64(8)
             bz = bz_b + off_z * np.int64(16) + np.int64(8)
 
             if -rad < bx < rad and -rad < bz < rad:
                 found += np.int32(1)
 
-            # Early exit: remaining regions cannot reach occurence threshold
             if found + np.int32(3 - region) < occ:
                 break
 
         if found >= occ:
             is_hit[ii] = True
 
-    # Phase 2 — sequential gather (no contention)
     count = np.int64(0)
     for ii in range(n):
         if is_hit[ii]:
@@ -198,13 +226,11 @@ def _scan_batch_standard(seeds_start, seeds_end, spacing, separation, salt,
 @nb.njit(cache=True, parallel=True, boundscheck=False)
 def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
                        radius, occurence):
-    """
-    Specialised scanner for linear_sep=True (averaged four-draw placement).
-    """
+    """Specialised scanner for linear_sep=True (averaged four-draw placement)."""
     spawn_range = spacing - separation
     n           = seeds_end - seeds_start
-    R_X         = np.int64(341873128712)
-    R_Z         = np.int64(132897987541)
+    R_X         = np.int64(R_X_CONST)
+    R_Z         = np.int64(R_Z_CONST)
     MULT        = np.int64(0x6c078965)
     MATRIX_A_   = np.uint32(0x9908b0df)
     UPPER_MASK_ = np.uint32(0x80000000)
@@ -216,7 +242,6 @@ def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
     rad         = np.int64(radius)
     occ         = np.int32(occurence)
 
-    # Precompute per-region seed adjustments and block-coordinate bases.
     sa = np.int64(salt)
     reg_s0 = sa
     reg_s1 = sa - R_X
@@ -233,7 +258,6 @@ def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
     bz_base2 = neg_sp16
     bz_base3 = neg_sp16
 
-    # Phase 1 — parallel mark pass
     is_hit = np.zeros(n, dtype=np.bool_)
 
     for ii in nb.prange(n):
@@ -269,7 +293,6 @@ def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
                     & np.int64(0xFFFFFFFF)
                 )
 
-            # --- Inline twist+temper for index 0 ---
             y  = (mt[0] & UPPER_MASK_) | (mt[1] & LOWER_MASK_)
             v0 = mt[M] ^ (y >> np.uint32(1))
             if y & np.uint32(1):
@@ -279,7 +302,6 @@ def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
             v0 ^= (v0 << np.uint32(15)) & T2
             v0 ^= v0 >> np.uint32(18)
 
-            # --- Inline twist+temper for index 1 ---
             y  = (mt[1] & UPPER_MASK_) | (mt[2] & LOWER_MASK_)
             v1 = mt[M + 1] ^ (y >> np.uint32(1))
             if y & np.uint32(1):
@@ -289,7 +311,6 @@ def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
             v1 ^= (v1 << np.uint32(15)) & T2
             v1 ^= v1 >> np.uint32(18)
 
-            # --- Inline twist+temper for index 2 ---
             y  = (mt[2] & UPPER_MASK_) | (mt[3] & LOWER_MASK_)
             v2 = mt[M + 2] ^ (y >> np.uint32(1))
             if y & np.uint32(1):
@@ -299,7 +320,6 @@ def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
             v2 ^= (v2 << np.uint32(15)) & T2
             v2 ^= v2 >> np.uint32(18)
 
-            # --- Inline twist+temper for index 3 ---
             y  = (mt[3] & UPPER_MASK_) | (mt[4] & LOWER_MASK_)
             v3 = mt[M + 3] ^ (y >> np.uint32(1))
             if y & np.uint32(1):
@@ -318,14 +338,12 @@ def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
             if -rad < bx < rad and -rad < bz < rad:
                 found += np.int32(1)
 
-            # Early exit: remaining regions cannot reach occurence threshold
             if found + np.int32(3 - region) < occ:
                 break
 
         if found >= occ:
             is_hit[ii] = True
 
-    # Phase 2 — sequential gather (no contention)
     count = np.int64(0)
     for ii in range(n):
         if is_hit[ii]:
@@ -341,9 +359,7 @@ def _scan_batch_linear(seeds_start, seeds_end, spacing, separation, salt,
 
 def scan_batch(seeds_start, seeds_end, spacing, separation, salt,
                linear_sep, radius, occurence):
-    """
-    Python wrapper — dispatches to the correct specialised JIT kernel.
-    """
+    """Python wrapper — dispatches to the correct specialised JIT kernel."""
     args = (int(seeds_start), int(seeds_end),
             int(spacing), int(separation), int(salt),
             int(radius), int(occurence))
@@ -354,15 +370,12 @@ def scan_batch(seeds_start, seeds_end, spacing, separation, salt,
 
 def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation,
            offx=8, offy=8):
-    """
-    Return the block-level (x, z) position of a structure candidate in
-    region (rx, rz) for the given world seed and structure RNG constants.
-    """
+    """Block-level (x, z) position of a structure candidate in region (rx, rz)."""
     spawn_range = spacing - separation
-    mixed  = (world_seed + rx * 341873128712 + rz * 132897987541 + salt) & ((1 << 64) - 1)
+    mixed  = (world_seed + rx * R_X_CONST + rz * R_Z_CONST + salt) & ((1 << 64) - 1)
     seed32 = mixed & 0xffffffff
 
-    mt  = mt_init(seed32)
+    mt  = mt_init(np.uint32(seed32))
     idx = N
     r0, idx = mt_extract(mt, idx)
     r1, idx = mt_extract(mt, idx)
@@ -379,3 +392,363 @@ def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation,
     chunk_x = rx * spacing + off_x
     chunk_z = rz * spacing + off_z
     return (chunk_x * 16 + offx, chunk_z * 16 + offy)
+
+
+# ---------------------------------------------------------------------------
+# Variant classification kernels (JIT)
+# ---------------------------------------------------------------------------
+@nb.njit(cache=True)
+def _classify_bastion_jit(world_seed_low, region_x, region_z):
+    """Classify a structure at (region_x, region_z) as bastion or fortress.
+
+    Returns (is_bastion: bool, bastion_type: int).  bastion_type is -1 if
+    the structure is a fortress, otherwise 0..3 (bridge/treasure/hoglin/housing).
+    """
+    R_X = np.int64(R_X_CONST)
+    R_Z = np.int64(R_Z_CONST)
+    salt = np.int64(BASTION_SALT)
+    reg_seed = np.uint32(
+        (np.int64(world_seed_low) + np.int64(region_x) * R_X
+         + np.int64(region_z) * R_Z + salt) & np.int64(0xffffffff)
+    )
+
+    mt = mt_init(reg_seed)
+    idx = N
+
+    _x1, idx = mt_extract(mt, idx)
+    _y1, idx = mt_extract(mt, idx)
+    check_val, idx = mt_extract(mt, idx)
+    is_bastion = (np.int64(check_val) % np.int64(6)) >= np.int64(2)
+
+    bastion_type = np.int64(-1)
+    if is_bastion:
+        _rotation, idx = mt_extract(mt, idx)
+        bastion_type_raw, idx = mt_extract(mt, idx)
+        bastion_type = np.int64(bastion_type_raw) % np.int64(4)
+
+    return is_bastion, bastion_type
+
+
+@nb.njit(cache=True)
+def _classify_portal_jit(world_seed_low, chunk_x, chunk_z):
+    """Classify a ruined portal's properties.
+
+    Returns (underground, airpocket, rotation, mirror, giant, variant_num).
+    """
+    # ----- chunk seed -----
+    mt0 = mt_init(np.uint32(world_seed_low))
+    idx0 = N
+    xMul_raw, idx0 = mt_extract(mt0, idx0)
+    zMul_raw, idx0 = mt_extract(mt0, idx0)
+    xMul = np.int64(xMul_raw >> np.uint32(1)) | np.int64(1)
+    zMul = np.int64(zMul_raw >> np.uint32(1)) | np.int64(1)
+
+    cs = (np.int64(chunk_x) * xMul + np.int64(chunk_z) * zMul) ^ np.int64(world_seed_low)
+    chunk_seed_val = np.uint32(cs & np.int64(0xffffffff))
+
+    mt = mt_init(chunk_seed_val)
+    idx = N
+
+    inv_2_32 = np.float64(1.0) / np.float64(4294967296.0)
+
+    underground_raw, idx = mt_extract(mt, idx)
+    underground = (np.float64(underground_raw) * inv_2_32) < 0.5
+
+    airpocket_raw, idx = mt_extract(mt, idx)
+    airpocket = (np.float64(airpocket_raw) * inv_2_32) < 0.5
+
+    rotation_raw, idx = mt_extract(mt, idx)
+    rotation = np.int64(rotation_raw) % np.int64(4)
+
+    mirror_raw, idx = mt_extract(mt, idx)
+    mirror = (np.float64(mirror_raw) * inv_2_32) >= 0.5
+
+    giant_raw, idx = mt_extract(mt, idx)
+    giant = (np.float64(giant_raw) * inv_2_32) < 0.05
+
+    if giant:
+        var_raw, idx = mt_extract(mt, idx)
+        variant_num = np.int64(var_raw) % np.int64(3) + np.int64(1)
+    else:
+        var_raw, idx = mt_extract(mt, idx)
+        variant_num = np.int64(var_raw) % np.int64(10) + np.int64(1)
+
+    return underground, airpocket, rotation, mirror, giant, variant_num
+
+
+@nb.njit(cache=True)
+def _check_village_at_chunk_jit(world_seed_low, chunk_x, chunk_z):
+    """Return True if a village generates exactly at the given chunk."""
+    R_X = np.int64(R_X_CONST)
+    R_Z = np.int64(R_Z_CONST)
+    salt = np.int64(VILLAGE_SALT)
+    spacing = np.int64(VILLAGE_SPACING)
+    separation = np.int64(VILLAGE_SEPARATION)
+
+    cx = np.int64(chunk_x)
+    cz = np.int64(chunk_z)
+
+    reg_x = cx // spacing
+    reg_z = cz // spacing
+
+    reg_seed = np.uint32(
+        (np.int64(world_seed_low) + reg_x * R_X + reg_z * R_Z + salt)
+        & np.int64(0xffffffff)
+    )
+
+    mt = mt_init(reg_seed)
+    idx = N
+
+    r0, idx = mt_extract(mt, idx)
+    r1, idx = mt_extract(mt, idx)
+    local_x = ((np.int64(r0) % separation) + (np.int64(r1) % separation)) // np.int64(2)
+
+    r2, idx = mt_extract(mt, idx)
+    r3, idx = mt_extract(mt, idx)
+    local_z = ((np.int64(r2) % separation) + (np.int64(r3) % separation)) // np.int64(2)
+
+    village_chunk_x = reg_x * spacing + local_x
+    village_chunk_z = reg_z * spacing + local_z
+
+    return village_chunk_x == cx and village_chunk_z == cz
+
+
+# ---------------------------------------------------------------------------
+# Stronghold placement kernels (JIT)
+# ---------------------------------------------------------------------------
+@nb.njit(cache=True)
+def _quasi_strongholds_jit(world_seed_low):
+    """Run the initial quasi-random stronghold placement (up to 3 villages).
+
+    Returns (out, count) where out[i] = (chunk_x, chunk_z) for the i-th
+    found village/stronghold (0 <= i < count, count <= 3).
+    """
+    out = np.zeros((3, 2), dtype=np.int64)
+    out_count = 0
+
+    mt = mt_init(np.uint32(world_seed_low))
+    idx = N
+
+    inv_2_32 = np.float64(1.0) / np.float64(4294967296.0)
+
+    angle_raw, idx = mt_extract(mt, idx)
+    angle = np.float64(angle_raw) * inv_2_32 * (2.0 * math.pi)
+
+    radius_raw, idx = mt_extract(mt, idx)
+    r = np.float64((np.int64(radius_raw) % np.int64(16)) + np.int64(40))
+
+    for _i in range(3):
+        cx = np.int64(math.floor(r * math.cos(angle)))
+        cz = np.int64(math.floor(r * math.sin(angle)))
+
+        found = False
+        for dx in range(-8, 8):
+            if found:
+                break
+            for dz in range(-8, 8):
+                sx = cx + np.int64(dx)
+                sz = cz + np.int64(dz)
+                if _check_village_at_chunk_jit(world_seed_low, sx, sz):
+                    out[out_count, 0] = sx
+                    out[out_count, 1] = sz
+                    out_count += 1
+                    found = True
+                    break
+
+        if found:
+            angle += 0.6 * math.pi
+            r += 8.0
+        else:
+            angle += 0.25 * math.pi
+            r += 4.0
+
+    return out, out_count
+
+
+@nb.njit(cache=True)
+def _grid_strongholds_jit(world_seed_low, gx_min, gx_max, gz_min, gz_max):
+    """Compute grid-placed stronghold chunk coordinates inside a grid range.
+
+    Iterates only the grid cells inside [gx_min..gx_max] x [gz_min..gz_max].
+    Returns (out, count) where out[i] = (chunk_x, chunk_z) for each spawned
+    stronghold.
+    """
+    nx = gx_max - gx_min + 1
+    nz = gz_max - gz_min + 1
+    cap = nx * nz
+    if cap < 1:
+        cap = 1
+    out = np.zeros((cap, 2), dtype=np.int64)
+    out_count = 0
+
+    GRID_SIZE = np.int64(STRONGHOLD_GRID_SIZE)
+    XMUL_C    = np.int64(STRONGHOLD_XMUL)
+    ZMUL_C    = np.int64(STRONGHOLD_ZMUL)
+    SALT_C    = np.int64(STRONGHOLD_SALT)
+    inv_2_32  = np.float64(1.0) / np.float64(4294967296.0)
+
+    for grid_x in range(gx_min, gx_max + 1):
+        for grid_z in range(gz_min, gz_max + 1):
+            grid_x100 = GRID_SIZE * np.int64(grid_x) + np.int64(100)
+            grid_z100 = GRID_SIZE * np.int64(grid_z) + np.int64(100)
+
+            xMul = (XMUL_C * grid_x100) & np.int64(0xffffffff)
+            zMul = (ZMUL_C * grid_z100) & np.int64(0xffffffff)
+            cell_seed = np.uint32(
+                (xMul + zMul + np.int64(world_seed_low) + SALT_C) & np.int64(0xffffffff)
+            )
+
+            mt = mt_init(cell_seed)
+            idx = N
+
+            spawn_prob, idx = mt_extract(mt, idx)
+            if (np.float64(spawn_prob) * inv_2_32) < 0.25:
+                min_x = GRID_SIZE * np.int64(grid_x) + GRID_SIZE - np.int64(150)
+                max_x = GRID_SIZE * np.int64(grid_x) + np.int64(150)
+                min_z = GRID_SIZE * np.int64(grid_z) + GRID_SIZE - np.int64(150)
+                max_z = GRID_SIZE * np.int64(grid_z) + np.int64(150)
+
+                x_raw, idx = mt_extract(mt, idx)
+                z_raw, idx = mt_extract(mt, idx)
+
+                x_chunk = min_x + np.int64(x_raw) % (max_x - min_x)
+                z_chunk = min_z + np.int64(z_raw) % (max_z - min_z)
+
+                out[out_count, 0] = x_chunk
+                out[out_count, 1] = z_chunk
+                out_count += 1
+
+    return out, out_count
+
+
+# ---------------------------------------------------------------------------
+# Python wrappers around the JIT classifiers
+# ---------------------------------------------------------------------------
+def classify_bastion_or_fortress(world_seed, region_x, region_z):
+    """Classify a structure at (region_x, region_z) as bastion or fortress.
+
+    Returns (structure_type, bastion_subtype) where structure_type is
+    "bastion" or "fortress" and bastion_subtype is 0..3 for bastions or
+    None for fortresses.
+    """
+    is_bastion, bastion_type = _classify_bastion_jit(
+        np.int64(world_seed & 0xffffffff),
+        np.int64(region_x), np.int64(region_z),
+    )
+    if is_bastion:
+        return "bastion", int(bastion_type)
+    return "fortress", None
+
+
+def classify_portal_variant(world_seed, chunk_x, chunk_z):
+    """Classify a ruined portal at (chunk_x, chunk_z) and return its variant info dict."""
+    underground, airpocket, rotation, mirror, giant, variant_num = _classify_portal_jit(
+        np.int64(world_seed & 0xffffffff),
+        np.int64(chunk_x), np.int64(chunk_z),
+    )
+
+    if giant:
+        variant = f"giant_portal_{int(variant_num)}"
+        variant_short = "giant"
+    else:
+        variant = f"portal_{int(variant_num)}"
+        variant_short = "normal"
+
+    variant_type = (
+        f"{variant_short}:underground" if underground
+        else f"{variant_short}:surface"
+    )
+
+    return {
+        "underground": bool(underground),
+        "airpocket":   bool(airpocket),
+        "rotation":    int(rotation),
+        "mirror":      bool(mirror),
+        "giant":       bool(giant),
+        "variant":     variant,
+        "variant_short": variant_short,
+        "variant_type":  variant_type,
+    }
+
+
+def check_village_at_chunk(world_seed, chunk_x, chunk_z):
+    """Return True if a village generates exactly at the given chunk."""
+    return bool(_check_village_at_chunk_jit(
+        np.int64(world_seed & 0xffffffff),
+        np.int64(chunk_x), np.int64(chunk_z),
+    ))
+
+
+def _is_stronghold_valid_biome(biome_gen, block_x, block_z):
+    """Check a stronghold position lies in a village-compatible biome."""
+    try:
+        biome_id = biome_gen.biome_at_block(block_x, block_z)
+        return is_village_biome(biome_id)
+    except Exception:
+        return False
+
+
+def find_strongholds_in_box(world_seed, x1, z1, x2, z2,
+                            biome_gen=None, skip_quasi=False):
+    """Find all stronghold positions whose block (x, z) falls inside the
+    bounding box (x1, z1) -> (x2, z2).
+
+    Only grid cells whose stronghold-eligible region overlaps the bounding
+    box are scanned, which makes the search proportional to the box area
+    rather than to a fixed search radius.
+
+    Args:
+        world_seed: world seed (only the low 32 bits are used).
+        x1, z1, x2, z2: block-coordinate bounding box (exclusive bounds —
+            same convention used elsewhere in the search).
+        biome_gen: optional BiomeGenerator for village-biome filtering.
+        skip_quasi: if True, skip the initial quasi-random placement
+            (the first ~3 strongholds derived from village finding) and
+            only scan the deterministic 200x200-chunk grid.  This is
+            significantly faster when only the grid placements matter.
+
+    Returns:
+        list of (block_x, block_z) tuples for matching strongholds.
+    """
+    s32 = int(world_seed) & 0xffffffff
+    strongholds = []
+
+    # Normalise box ordering defensively.
+    if x1 > x2:
+        x1, x2 = x2, x1
+    if z1 > z2:
+        z1, z2 = z2, z1
+
+    # ----- Quasi-random placement (up to 3 strongholds via village finding)
+    if not skip_quasi:
+        chunks, count = _quasi_strongholds_jit(np.int64(s32))
+        for i in range(int(count)):
+            cx = int(chunks[i, 0])
+            cz = int(chunks[i, 1])
+            sh_x = cx * 16 + 8
+            sh_z = cz * 16 + 8
+            if x1 < sh_x < x2 and z1 < sh_z < z2:
+                if biome_gen is None or _is_stronghold_valid_biome(biome_gen, sh_x, sh_z):
+                    strongholds.append((sh_x, sh_z))
+
+    # ----- Grid placement, restricted to the bounding box ------------------
+    SCALE = STRONGHOLD_GRID_SIZE * 16  # = 3200 blocks per grid cell
+    # ±1 cell of padding to cover strongholds near grid borders.
+    gx_min = (x1 // SCALE) - 1
+    gx_max = (x2 // SCALE) + 1
+    gz_min = (z1 // SCALE) - 1
+    gz_max = (z2 // SCALE) + 1
+
+    chunks, count = _grid_strongholds_jit(
+        np.int64(s32),
+        np.int64(gx_min), np.int64(gx_max),
+        np.int64(gz_min), np.int64(gz_max),
+    )
+    for i in range(int(count)):
+        sh_x = int(chunks[i, 0]) * 16 + 8
+        sh_z = int(chunks[i, 1]) * 16 + 8
+        if x1 < sh_x < x2 and z1 < sh_z < z2:
+            if biome_gen is None or _is_stronghold_valid_biome(biome_gen, sh_x, sh_z):
+                strongholds.append((sh_x, sh_z))
+
+    return strongholds
