@@ -748,24 +748,20 @@ def _is_stronghold_valid_biome(biome_gen, block_x, block_z):
         return False
 
 
-def find_strongholds_in_box(world_seed, x1, z1, x2, z2,
-                            biome_gen=None, skip_quasi=False):
+def find_strongholds_in_box(world_seed, x1, z1, x2, z2, biome_gen=None):
     """Find all stronghold positions whose block (x, z) falls inside the
     bounding box (x1, z1) -> (x2, z2).
 
-    Only grid cells whose stronghold-eligible region overlaps the bounding
-    box are scanned, which makes the search proportional to the box area
-    rather than to a fixed search radius.
+    Scans both the initial quasi-random placement (up to 3 strongholds
+    derived from village finding) and the deterministic 200x200-chunk grid
+    placements.  Only grid cells whose stronghold-eligible region overlaps
+    the bounding box are scanned.
 
     Args:
         world_seed: world seed (only the low 32 bits are used).
         x1, z1, x2, z2: block-coordinate bounding box (exclusive bounds —
             same convention used elsewhere in the search).
         biome_gen: optional BiomeGenerator for village-biome filtering.
-        skip_quasi: if True, skip the initial quasi-random placement
-            (the first ~3 strongholds derived from village finding) and
-            only scan the deterministic 200x200-chunk grid.  This is
-            significantly faster when only the grid placements matter.
 
     Returns:
         list of (block_x, block_z) tuples for matching strongholds.
@@ -780,16 +776,15 @@ def find_strongholds_in_box(world_seed, x1, z1, x2, z2,
         z1, z2 = z2, z1
 
     # ----- Quasi-random placement (up to 3 strongholds via village finding)
-    if not skip_quasi:
-        chunks, count = _quasi_strongholds_jit(np.int64(s32))
-        for i in range(int(count)):
-            cx = int(chunks[i, 0])
-            cz = int(chunks[i, 1])
-            sh_x = cx * 16 + 8
-            sh_z = cz * 16 + 8
-            if x1 < sh_x < x2 and z1 < sh_z < z2:
-                if biome_gen is None or _is_stronghold_valid_biome(biome_gen, sh_x, sh_z):
-                    strongholds.append((sh_x, sh_z))
+    chunks, count = _quasi_strongholds_jit(np.int64(s32))
+    for i in range(int(count)):
+        cx = int(chunks[i, 0])
+        cz = int(chunks[i, 1])
+        sh_x = cx * 16 + 8
+        sh_z = cz * 16 + 8
+        if x1 < sh_x < x2 and z1 < sh_z < z2:
+            if biome_gen is None or _is_stronghold_valid_biome(biome_gen, sh_x, sh_z):
+                strongholds.append((sh_x, sh_z))
 
     # ----- Grid placement, restricted to the bounding box ------------------
     SCALE = STRONGHOLD_GRID_SIZE * 16  # = 3200 blocks per grid cell
@@ -819,7 +814,7 @@ def find_strongholds_in_box(world_seed, x1, z1, x2, z2,
 # ---------------------------------------------------------------------------
 @nb.njit(cache=True, parallel=True, boundscheck=False)
 def _scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2,
-                           occurence, skip_quasi):
+                           occurence):
     """Parallel JIT prefilter: returns seeds with >=occurence strongholds
     inside the (x1, z1)-(x2, z2) bounding box.  Biome-blind — biome filtering
     is reapplied at Python level on the much smaller candidate list.
@@ -849,15 +844,14 @@ def _scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2,
         s32 = (np.int64(seeds_start) + np.int64(ii)) & MASK
         found = np.int32(0)
 
-        if not skip_quasi:
-            q_chunks, q_count = _quasi_strongholds_jit(s32)
-            for qi in range(q_count):
-                sh_x = q_chunks[qi, 0] * np.int64(16) + np.int64(8)
-                sh_z = q_chunks[qi, 1] * np.int64(16) + np.int64(8)
-                if bx1 < sh_x < bx2 and bz1 < sh_z < bz2:
-                    found += np.int32(1)
-                    if found >= occ:
-                        break
+        q_chunks, q_count = _quasi_strongholds_jit(s32)
+        for qi in range(q_count):
+            sh_x = q_chunks[qi, 0] * np.int64(16) + np.int64(8)
+            sh_z = q_chunks[qi, 1] * np.int64(16) + np.int64(8)
+            if bx1 < sh_x < bx2 and bz1 < sh_z < bz2:
+                found += np.int32(1)
+                if found >= occ:
+                    break
 
         if found < occ:
             g_chunks, g_count = _grid_strongholds_jit(
@@ -887,11 +881,10 @@ def _scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2,
     return result
 
 
-def scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2,
-                          occurence, skip_quasi):
+def scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2, occurence):
     """Python wrapper around the parallel stronghold batch prefilter."""
     return _scan_batch_stronghold(
         int(seeds_start), int(seeds_end),
         int(x1), int(z1), int(x2), int(z2),
-        int(occurence), bool(skip_quasi),
+        int(occurence),
     )

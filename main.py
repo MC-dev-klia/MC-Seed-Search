@@ -348,21 +348,6 @@ def _prompt_structure_constraint(idx):
             for rx, rz in [(0,0), (-1,0), (0,-1), (-1,-1)]:
                 quadrant_biomes[(rx, rz)] = biomes
 
-    # Stronghold-only: optionally skip the initial quasi-random placement
-    # (the first ~3 strongholds derived from village finding).  Skipping is
-    # significantly faster and is preferable when only the deterministic
-    # 200x200-chunk grid placements matter.
-    skip_quasi = False
-    if struct_type == "stronghold":
-        ans = input(
-            "  Skip initial quasi-random stronghold placement for efficiency? (y/n) [n] "
-        ).strip().lower()
-        skip_quasi = ans in ("y", "yes")
-        if skip_quasi:
-            print("    Quasi-random placement SKIPPED — only grid placements scanned.")
-        else:
-            print("    Quasi-random placement ENABLED.")
-
     if needs_biome_gen:
         ans = input(
             "  4-corner biome check? (y/n) [n]"
@@ -389,7 +374,6 @@ def _prompt_structure_constraint(idx):
         "corner_check": corner_check,
         "specific_quadrants": specific_quadrants,
         "specific_positions": specific_positions,
-        "skip_quasi":  skip_quasi,
         "variants":    {},  # Will store (pos) -> variant_info mappings
     }, needs_biome_gen
 
@@ -509,7 +493,6 @@ def _check_struct_positions(s32, c, biome_gen=None):
         strongholds = find_strongholds_in_box(
             s32, c["x1"], c["z1"], c["x2"], c["z2"],
             biome_gen=biome_gen,
-            skip_quasi=c.get("skip_quasi", False),
         )
         found = 0
         for sh_x, sh_z in strongholds:
@@ -864,7 +847,7 @@ def seedsearch():
             return scan_batch_stronghold(
                 s_lo, s_hi,
                 primary["x1"], primary["z1"], primary["x2"], primary["z2"],
-                primary["occurence"], primary.get("skip_quasi", False),
+                primary["occurence"],
             )
         return scan_batch(
             s_lo, s_hi,
