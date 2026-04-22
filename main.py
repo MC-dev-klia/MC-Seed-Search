@@ -7,8 +7,13 @@ import sys
 import time
 import re
 import biome as bm
-from structure import getpos, scan_batch
-import structure_variants as sv
+from structure import (
+    getpos,
+    scan_batch,
+    classify_bastion_or_fortress,
+    classify_portal_variant,
+    find_strongholds_in_box,
+)
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -342,6 +347,21 @@ def _prompt_structure_constraint(idx):
             for rx, rz in [(0,0), (-1,0), (0,-1), (-1,-1)]:
                 quadrant_biomes[(rx, rz)] = biomes
 
+    # Stronghold-only: optionally skip the initial quasi-random placement
+    # (the first ~3 strongholds derived from village finding).  Skipping is
+    # significantly faster and is preferable when only the deterministic
+    # 200x200-chunk grid placements matter.
+    skip_quasi = False
+    if struct_type == "stronghold":
+        ans = input(
+            "  Skip initial quasi-random stronghold placement for efficiency? (y/n) [n] "
+        ).strip().lower()
+        skip_quasi = ans in ("y", "yes")
+        if skip_quasi:
+            print("    Quasi-random placement SKIPPED — only grid placements scanned.")
+        else:
+            print("    Quasi-random placement ENABLED.")
+
     if needs_biome_gen:
         ans = input(
             "  4-corner biome check? (y/n) [n]"
@@ -368,6 +388,7 @@ def _prompt_structure_constraint(idx):
         "corner_check": corner_check,
         "specific_quadrants": specific_quadrants,
         "specific_positions": specific_positions,
+        "skip_quasi":  skip_quasi,
         "variants":    {},  # Will store (pos) -> variant_info mappings
     }, needs_biome_gen
 
@@ -425,7 +446,7 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
     region_z = 0 if chunk_z >= 0 else -1
     
     if struct_type == "bastion":
-        structure_name, bastion_type = sv.classify_bastion_or_fortress(seed32, region_x, region_z)
+        structure_name, bastion_type = classify_bastion_or_fortress(seed32, region_x, region_z)
         if structure_name == "bastion":
             bastion_names = ["bridge", "treasure", "hoglin", "housing"]
             variant_label = f"bastion:{bastion_names[bastion_type]}"
@@ -436,10 +457,10 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
         else:
             return None
     elif struct_type == "fortress":
-        structure_name, _ = sv.classify_bastion_or_fortress(seed32, region_x, region_z)
+        structure_name, _ = classify_bastion_or_fortress(seed32, region_x, region_z)
         return "fortress" if structure_name == "fortress" else None
     elif struct_type == "either":
-        structure_name, bastion_type = sv.classify_bastion_or_fortress(seed32, region_x, region_z)
+        structure_name, bastion_type = classify_bastion_or_fortress(seed32, region_x, region_z)
         if structure_name == "bastion":
             bastion_names = ["bridge", "treasure", "hoglin", "housing"]
             variant_label = f"bastion:{bastion_names[bastion_type]}"
@@ -449,7 +470,7 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
         else:
             return "fortress"
     elif struct_type == "portal" or struct_type == "ruined_portal":
-        portal_info = sv.classify_portal_variant(seed32, chunk_x, chunk_z)
+        portal_info = classify_portal_variant(seed32, chunk_x, chunk_z)
         variant_type = portal_info["variant_type"]
         # Check filter: tuple (depth_filter, type_filter) where 0=any, 1=first, 2=second
         if variant_filter is not None and isinstance(variant_filter, tuple):
@@ -478,20 +499,22 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
 def _check_struct_positions(s32, c, biome_gen=None):
     # Special handling for stronghold 
     if c.get("struct_type") == "stronghold":
-        # Stronghold: find strongholds in the bounding box region
+        # Stronghold: enumerate strongholds whose grid cells overlap the box.
         # Apply seed to biome generator if provided
         if biome_gen:
             biome_gen.apply_seed(s32)
-        
+
         positions = []
-        strongholds = sv.find_strongholds_in_radius(s32, 0, 0, 5000, biome_gen)  # Search within ~5000 blocks
+        strongholds = find_strongholds_in_box(
+            s32, c["x1"], c["z1"], c["x2"], c["z2"],
+            biome_gen=biome_gen,
+            skip_quasi=c.get("skip_quasi", False),
+        )
         found = 0
         for sh_x, sh_z in strongholds:
-            in_box = c["x1"] < sh_x < c["x2"] and c["z1"] < sh_z < c["z2"]
-            if in_box:
-                c["variants"][(sh_x, sh_z)] = "stronghold"
-                positions.append(((0, 0), (sh_x, sh_z), True))  # Use dummy region (0,0)
-                found += 1
+            c["variants"][(sh_x, sh_z)] = "stronghold"
+            positions.append(((0, 0), (sh_x, sh_z), True))  # dummy quadrant
+            found += 1
         return positions, found
     
     # Standard structure handling
