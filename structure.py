@@ -521,15 +521,52 @@ def _check_village_at_chunk_jit(world_seed_low, chunk_x, chunk_z):
 # ---------------------------------------------------------------------------
 # Stronghold placement kernels (JIT)
 # ---------------------------------------------------------------------------
+@nb.njit(cache=True, inline='always')
+def _village_chunk_in_region(world_seed_low, reg_x, reg_z):
+    """Return the (chunk_x, chunk_z) of the (single) village in a village
+    region. One MT init, four draws — identical math to
+    `_check_village_at_chunk_jit` but returns the position instead of a
+    bool comparison."""
+    R_X = np.int64(R_X_CONST)
+    R_Z = np.int64(R_Z_CONST)
+    salt = np.int64(VILLAGE_SALT)
+    spacing = np.int64(VILLAGE_SPACING)
+    separation = np.int64(VILLAGE_SEPARATION)
+
+    reg_seed = np.uint32(
+        (np.int64(world_seed_low) + reg_x * R_X + reg_z * R_Z + salt)
+        & np.int64(0xffffffff)
+    )
+
+    mt = mt_init(reg_seed)
+    idx = N
+    r0, idx = mt_extract(mt, idx)
+    r1, idx = mt_extract(mt, idx)
+    local_x = ((np.int64(r0) % separation) + (np.int64(r1) % separation)) // np.int64(2)
+    r2, idx = mt_extract(mt, idx)
+    r3, idx = mt_extract(mt, idx)
+    local_z = ((np.int64(r2) % separation) + (np.int64(r3) % separation)) // np.int64(2)
+
+    return reg_x * spacing + local_x, reg_z * spacing + local_z
+
+
 @nb.njit(cache=True)
 def _quasi_strongholds_jit(world_seed_low):
     """Run the initial quasi-random stronghold placement (up to 3 villages).
 
     Returns (out, count) where out[i] = (chunk_x, chunk_z) for the i-th
     found village/stronghold (0 <= i < count, count <= 3).
+
+    Optimisation: instead of probing 256 chunks per attempt with a full MT
+    init each, look up the (<=4) village regions touching the
+    16x16 search window and check whether each region's single village
+    falls inside the window. Reduces MT inits per attempt from up to 256
+    down to at most 4.
     """
     out = np.zeros((3, 2), dtype=np.int64)
     out_count = 0
+
+    spacing = np.int64(VILLAGE_SPACING)
 
     mt = mt_init(np.uint32(world_seed_low))
     idx = N
@@ -546,21 +583,39 @@ def _quasi_strongholds_jit(world_seed_low):
         cx = np.int64(math.floor(r * math.cos(angle)))
         cz = np.int64(math.floor(r * math.sin(angle)))
 
+        # Search window: dx,dz in [-8, 8) -> chunks in [cx-8, cx+8) x [cz-8, cz+8).
+        wx_lo = cx - np.int64(8)
+        wx_hi = cx + np.int64(8)   # exclusive
+        wz_lo = cz - np.int64(8)
+        wz_hi = cz + np.int64(8)   # exclusive
+
+        # Up to 2 regions in each axis (16-chunk window < 34-chunk spacing).
+        rx_lo = wx_lo // spacing
+        rx_hi = (wx_hi - np.int64(1)) // spacing
+        rz_lo = wz_lo // spacing
+        rz_hi = (wz_hi - np.int64(1)) // spacing
+
         found = False
-        for dx in range(-8, 8):
-            if found:
-                break
-            for dz in range(-8, 8):
-                sx = cx + np.int64(dx)
-                sz = cz + np.int64(dz)
-                if _check_village_at_chunk_jit(world_seed_low, sx, sz):
-                    out[out_count, 0] = sx
-                    out[out_count, 1] = sz
-                    out_count += 1
-                    found = True
-                    break
+        best_sx = np.int64(0)
+        best_sz = np.int64(0)
+
+        for rx in range(rx_lo, rx_hi + np.int64(1)):
+            for rz in range(rz_lo, rz_hi + np.int64(1)):
+                sx, sz = _village_chunk_in_region(world_seed_low, rx, rz)
+                # Inside the C# window [cx-8, cx+8) x [cz-8, cz+8) ?
+                if wx_lo <= sx < wx_hi and wz_lo <= sz < wz_hi:
+                    # C# iterates dx outer ascending, dz inner ascending and
+                    # accepts the FIRST match in that scan order. Equivalent
+                    # to picking min (sx, sz) lexicographically.
+                    if (not found) or (sx < best_sx) or (sx == best_sx and sz < best_sz):
+                        best_sx = sx
+                        best_sz = sz
+                        found = True
 
         if found:
+            out[out_count, 0] = best_sx
+            out[out_count, 1] = best_sz
+            out_count += 1
             angle += 0.6 * math.pi
             r += 8.0
         else:
