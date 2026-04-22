@@ -519,12 +519,13 @@ def _check_struct_positions(s32, c, biome_gen=None):
             # Classify variant if applicable
             if in_box and c.get("struct_type"):
                 try:
-                    chunk_x, chunk_z = bx >> 4, bz >> 4
-                    variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
-                    if not variant:
-                        in_box = False
-                    if variant != None:
-                        c["variants"][pos] = variant
+                    if c.get("variant_filter") is not None:
+                        chunk_x, chunk_z = bx >> 4, bz >> 4
+                        variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
+                        if not variant:
+                            in_box = False
+                        if variant != None:
+                            c["variants"][pos] = variant
                 except EOFError:
                     print("Exception")
                     pass  
@@ -543,12 +544,13 @@ def _check_struct_positions(s32, c, biome_gen=None):
             # Classify variant if applicable
             if in_box and c.get("struct_type"):
                 try:
-                    chunk_x, chunk_z = bx >> 4, bz >> 4
-                    variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
-                    if not variant:
-                        in_box = False 
-                    if variant != None:
-                        c["variants"][pos] = variant
+                    if c.get("variant_filter") is not None:
+                        chunk_x, chunk_z = bx >> 4, bz >> 4
+                        variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
+                        if not variant:
+                            in_box = False 
+                        if variant != None:
+                            c["variants"][pos] = variant
                 except EOFError:
                     pass
             positions.append(((rx, rz), pos, in_box))
@@ -753,13 +755,13 @@ def seedsearch():
     if needs_biome_gen:
         print()
         ans = input(
-            "Enable 32-bit structure scan with 32-bit biome expansion?"
+            "Enable 32-bit structure scan with 32-bit biome expansion?(y/n)[n]"
         ).strip().lower()
         expand_mode = ans in ("y", "yes")
         if expand_mode:
             raw_top = input("  Test first N upper 32-bit values [65535]: ").strip()
             expand_top_count = int(raw_top) if raw_top else 65535
-            raw_stop = input("  Stop after N matched biome seeds [1]: ").strip()
+            raw_stop = input("  Stop expansion after N matched biome seeds [1]: ").strip()
             expand_stop_on_matches = int(raw_stop) if raw_stop else 1
             if expand_stop_on_matches < 0:
                 expand_stop_on_matches = 0
