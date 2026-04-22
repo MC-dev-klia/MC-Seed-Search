@@ -1,3 +1,16 @@
+[project]
+name = "mc-seed-search"
+version = "0.1.0"
+description = ""
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "matplotlib>=3.10.1",
+    "numpy>=2.2.4",
+    "sympy>=1.14.0",
+    "pygame>=2.6.1",
+    "numba>=0.62.1",
+]
+
 [tool.poetry]
 name = "python-template"
 version = "0.1.0"
@@ -22,6 +35,5 @@ exclude = [".cache"]
 select = ['E', 'W', 'F', 'I', 'B', 'C4', 'ARG', 'SIM']
 ignore = ['W291', 'W292', 'W293']
 
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.uv]
+package = false
