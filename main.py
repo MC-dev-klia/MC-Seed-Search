@@ -10,6 +10,7 @@ import biome as bm
 from structure import (
     getpos,
     scan_batch,
+    scan_batch_stronghold,
     classify_bastion_or_fortress,
     classify_portal_variant,
     find_strongholds_in_box,
@@ -347,21 +348,6 @@ def _prompt_structure_constraint(idx):
             for rx, rz in [(0,0), (-1,0), (0,-1), (-1,-1)]:
                 quadrant_biomes[(rx, rz)] = biomes
 
-    # Stronghold-only: optionally skip the initial quasi-random placement
-    # (the first ~3 strongholds derived from village finding).  Skipping is
-    # significantly faster and is preferable when only the deterministic
-    # 200x200-chunk grid placements matter.
-    skip_quasi = False
-    if struct_type == "stronghold":
-        ans = input(
-            "  Skip initial quasi-random stronghold placement for efficiency? (y/n) [n] "
-        ).strip().lower()
-        skip_quasi = ans in ("y", "yes")
-        if skip_quasi:
-            print("    Quasi-random placement SKIPPED — only grid placements scanned.")
-        else:
-            print("    Quasi-random placement ENABLED.")
-
     if needs_biome_gen:
         ans = input(
             "  4-corner biome check? (y/n) [n]"
@@ -388,7 +374,6 @@ def _prompt_structure_constraint(idx):
         "corner_check": corner_check,
         "specific_quadrants": specific_quadrants,
         "specific_positions": specific_positions,
-        "skip_quasi":  skip_quasi,
         "variants":    {},  # Will store (pos) -> variant_info mappings
     }, needs_biome_gen
 
@@ -508,7 +493,6 @@ def _check_struct_positions(s32, c, biome_gen=None):
         strongholds = find_strongholds_in_box(
             s32, c["x1"], c["z1"], c["x2"], c["z2"],
             biome_gen=biome_gen,
-            skip_quasi=c.get("skip_quasi", False),
         )
         found = 0
         for sh_x, sh_z in strongholds:
@@ -856,60 +840,34 @@ def seedsearch():
         abs(primary["z1"]), abs(primary["z2"]),
     )
 
+    # ---- primary-prefilter dispatch -----------------------------------------
+    primary_is_stronghold = primary.get("struct_type") == "stronghold"
+
+    def _primary_jit_hits(s_lo, s_hi):
+        """Return candidate seeds (low-32-bit values) for [s_lo, s_hi)."""
+        if primary_is_stronghold:
+            return scan_batch_stronghold(
+                s_lo, s_hi,
+                primary["x1"], primary["z1"], primary["x2"], primary["z2"],
+                primary["occurence"],
+            )
+        return scan_batch(
+            s_lo, s_hi,
+            primary["spacing"], primary["separation"], primary["salt"],
+            primary["linear_sep"], effective_radius, primary["occurence"],
+        )
+
     # ---- main scan loop -----------------------------------------------------
     def run(f=None):
         emit(header, f)
         emit("", f)
 
-        # Check if primary constraint is stronghold (no JIT support)
-        if primary.get("struct_type") == "stronghold":
-            print("Note: stronghold search is handled via Python (no JIT kernel).\n", flush=True)
-            times = time.time()
-            total_matched = 0
-            s = seedstart
-            
-            while s < seedend:
-                s32 = s & MASK32
-                
-                # Check structural constraints
-                all_positions = []
-                pass_all = True
-                for i, c in enumerate(struct_constraints):
-                    positions, found = _check_struct_positions(s32, c, biome_gen)
-                    if found < c["occurence"]:
-                        pass_all = False
-                        break
-                    all_positions.append(positions)
-                
-                if pass_all:
-                    # Check biome constraints if generator exists
-                    if biome_constraints and not biome_gen:
-                        # Biome constraints specified but generator not initialized
-                        s += 1
-                        continue
-                    if biome_constraints and biome_gen and not _check_biomes(biome_gen, struct_constraints, all_positions, biome_constraints):
-                        s += 1
-                        continue
-                    
-                    # Seed passed all checks
-                    total_matched += 1
-                    result_str = _format_result(s32, struct_constraints, all_positions,
-                                               biome_constraints, None, None)
-                    emit(result_str, f)
-                
-                s += 1
-            
-            elapsed = time.time() - times
-            emit(f"\n# Finished.  Time: {elapsed:.2f}s", f)
-            emit(f"# Seeds checked: {seedend - seedstart}", f)
-            emit(f"# Matches found: {total_matched}", f)
-            return
-
-        # Standard JIT-based search for non-stronghold structures
-        print("Compiling search kernel...", flush=True)
-        scan_batch(0, 1,
-                   primary["spacing"], primary["separation"], primary["salt"],
-                   primary["linear_sep"], effective_radius, primary["occurence"])
+        # Compile the appropriate JIT prefilter kernel
+        if primary_is_stronghold:
+            print("Compiling stronghold search kernel...", flush=True)
+        else:
+            print("Compiling search kernel...", flush=True)
+        _primary_jit_hits(0, 1)
         print("Ready — starting scan.\n", flush=True)
 
         times         = time.time()
@@ -945,11 +903,7 @@ def seedsearch():
                 f.write(prog + "\n")
                 f.flush()
             # --- JIT scan (primary structure constraint, enlarged radius) ---
-            jit_hits = scan_batch(
-                s, batch_end,
-                primary["spacing"], primary["separation"], primary["salt"],
-                primary["linear_sep"], effective_radius, primary["occurence"],
-            )
+            jit_hits = _primary_jit_hits(s, batch_end)
             total_jit   += len(jit_hits)
             batch_struct  = 0
             batch_matched = 0

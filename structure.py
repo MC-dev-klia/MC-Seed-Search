@@ -368,6 +368,11 @@ def scan_batch(seeds_start, seeds_end, spacing, separation, salt,
     return _scan_batch_standard(*args)
 
 
+# (Stronghold batch prefilter `_scan_batch_stronghold` and its Python wrapper
+# `scan_batch_stronghold` are defined at the bottom of this file, after the
+# helper kernels they depend on.)
+
+
 def getpos(world_seed, rx, rz, spacing, separation, salt, linear_separation,
            offx=8, offy=8):
     """Block-level (x, z) position of a structure candidate in region (rx, rz)."""
@@ -516,15 +521,52 @@ def _check_village_at_chunk_jit(world_seed_low, chunk_x, chunk_z):
 # ---------------------------------------------------------------------------
 # Stronghold placement kernels (JIT)
 # ---------------------------------------------------------------------------
+@nb.njit(cache=True, inline='always')
+def _village_chunk_in_region(world_seed_low, reg_x, reg_z):
+    """Return the (chunk_x, chunk_z) of the (single) village in a village
+    region. One MT init, four draws — identical math to
+    `_check_village_at_chunk_jit` but returns the position instead of a
+    bool comparison."""
+    R_X = np.int64(R_X_CONST)
+    R_Z = np.int64(R_Z_CONST)
+    salt = np.int64(VILLAGE_SALT)
+    spacing = np.int64(VILLAGE_SPACING)
+    separation = np.int64(VILLAGE_SEPARATION)
+
+    reg_seed = np.uint32(
+        (np.int64(world_seed_low) + reg_x * R_X + reg_z * R_Z + salt)
+        & np.int64(0xffffffff)
+    )
+
+    mt = mt_init(reg_seed)
+    idx = N
+    r0, idx = mt_extract(mt, idx)
+    r1, idx = mt_extract(mt, idx)
+    local_x = ((np.int64(r0) % separation) + (np.int64(r1) % separation)) // np.int64(2)
+    r2, idx = mt_extract(mt, idx)
+    r3, idx = mt_extract(mt, idx)
+    local_z = ((np.int64(r2) % separation) + (np.int64(r3) % separation)) // np.int64(2)
+
+    return reg_x * spacing + local_x, reg_z * spacing + local_z
+
+
 @nb.njit(cache=True)
 def _quasi_strongholds_jit(world_seed_low):
     """Run the initial quasi-random stronghold placement (up to 3 villages).
 
     Returns (out, count) where out[i] = (chunk_x, chunk_z) for the i-th
     found village/stronghold (0 <= i < count, count <= 3).
+
+    Optimisation: instead of probing 256 chunks per attempt with a full MT
+    init each, look up the (<=4) village regions touching the
+    16x16 search window and check whether each region's single village
+    falls inside the window. Reduces MT inits per attempt from up to 256
+    down to at most 4.
     """
     out = np.zeros((3, 2), dtype=np.int64)
     out_count = 0
+
+    spacing = np.int64(VILLAGE_SPACING)
 
     mt = mt_init(np.uint32(world_seed_low))
     idx = N
@@ -541,21 +583,39 @@ def _quasi_strongholds_jit(world_seed_low):
         cx = np.int64(math.floor(r * math.cos(angle)))
         cz = np.int64(math.floor(r * math.sin(angle)))
 
+        # Search window: dx,dz in [-8, 8) -> chunks in [cx-8, cx+8) x [cz-8, cz+8).
+        wx_lo = cx - np.int64(8)
+        wx_hi = cx + np.int64(8)   # exclusive
+        wz_lo = cz - np.int64(8)
+        wz_hi = cz + np.int64(8)   # exclusive
+
+        # Up to 2 regions in each axis (16-chunk window < 34-chunk spacing).
+        rx_lo = wx_lo // spacing
+        rx_hi = (wx_hi - np.int64(1)) // spacing
+        rz_lo = wz_lo // spacing
+        rz_hi = (wz_hi - np.int64(1)) // spacing
+
         found = False
-        for dx in range(-8, 8):
-            if found:
-                break
-            for dz in range(-8, 8):
-                sx = cx + np.int64(dx)
-                sz = cz + np.int64(dz)
-                if _check_village_at_chunk_jit(world_seed_low, sx, sz):
-                    out[out_count, 0] = sx
-                    out[out_count, 1] = sz
-                    out_count += 1
-                    found = True
-                    break
+        best_sx = np.int64(0)
+        best_sz = np.int64(0)
+
+        for rx in range(rx_lo, rx_hi + np.int64(1)):
+            for rz in range(rz_lo, rz_hi + np.int64(1)):
+                sx, sz = _village_chunk_in_region(world_seed_low, rx, rz)
+                # Inside the C# window [cx-8, cx+8) x [cz-8, cz+8) ?
+                if wx_lo <= sx < wx_hi and wz_lo <= sz < wz_hi:
+                    # C# iterates dx outer ascending, dz inner ascending and
+                    # accepts the FIRST match in that scan order. Equivalent
+                    # to picking min (sx, sz) lexicographically.
+                    if (not found) or (sx < best_sx) or (sx == best_sx and sz < best_sz):
+                        best_sx = sx
+                        best_sz = sz
+                        found = True
 
         if found:
+            out[out_count, 0] = best_sx
+            out[out_count, 1] = best_sz
+            out_count += 1
             angle += 0.6 * math.pi
             r += 8.0
         else:
@@ -688,24 +748,20 @@ def _is_stronghold_valid_biome(biome_gen, block_x, block_z):
         return False
 
 
-def find_strongholds_in_box(world_seed, x1, z1, x2, z2,
-                            biome_gen=None, skip_quasi=False):
+def find_strongholds_in_box(world_seed, x1, z1, x2, z2, biome_gen=None):
     """Find all stronghold positions whose block (x, z) falls inside the
     bounding box (x1, z1) -> (x2, z2).
 
-    Only grid cells whose stronghold-eligible region overlaps the bounding
-    box are scanned, which makes the search proportional to the box area
-    rather than to a fixed search radius.
+    Scans both the initial quasi-random placement (up to 3 strongholds
+    derived from village finding) and the deterministic 200x200-chunk grid
+    placements.  Only grid cells whose stronghold-eligible region overlaps
+    the bounding box are scanned.
 
     Args:
         world_seed: world seed (only the low 32 bits are used).
         x1, z1, x2, z2: block-coordinate bounding box (exclusive bounds —
             same convention used elsewhere in the search).
         biome_gen: optional BiomeGenerator for village-biome filtering.
-        skip_quasi: if True, skip the initial quasi-random placement
-            (the first ~3 strongholds derived from village finding) and
-            only scan the deterministic 200x200-chunk grid.  This is
-            significantly faster when only the grid placements matter.
 
     Returns:
         list of (block_x, block_z) tuples for matching strongholds.
@@ -720,16 +776,15 @@ def find_strongholds_in_box(world_seed, x1, z1, x2, z2,
         z1, z2 = z2, z1
 
     # ----- Quasi-random placement (up to 3 strongholds via village finding)
-    if not skip_quasi:
-        chunks, count = _quasi_strongholds_jit(np.int64(s32))
-        for i in range(int(count)):
-            cx = int(chunks[i, 0])
-            cz = int(chunks[i, 1])
-            sh_x = cx * 16 + 8
-            sh_z = cz * 16 + 8
-            if x1 < sh_x < x2 and z1 < sh_z < z2:
-                if biome_gen is None or _is_stronghold_valid_biome(biome_gen, sh_x, sh_z):
-                    strongholds.append((sh_x, sh_z))
+    chunks, count = _quasi_strongholds_jit(np.int64(s32))
+    for i in range(int(count)):
+        cx = int(chunks[i, 0])
+        cz = int(chunks[i, 1])
+        sh_x = cx * 16 + 8
+        sh_z = cz * 16 + 8
+        if x1 < sh_x < x2 and z1 < sh_z < z2:
+            if biome_gen is None or _is_stronghold_valid_biome(biome_gen, sh_x, sh_z):
+                strongholds.append((sh_x, sh_z))
 
     # ----- Grid placement, restricted to the bounding box ------------------
     SCALE = STRONGHOLD_GRID_SIZE * 16  # = 3200 blocks per grid cell
@@ -752,3 +807,84 @@ def find_strongholds_in_box(world_seed, x1, z1, x2, z2,
                 strongholds.append((sh_x, sh_z))
 
     return strongholds
+
+
+# ---------------------------------------------------------------------------
+# Stronghold batch prefilter (parallel JIT)
+# ---------------------------------------------------------------------------
+@nb.njit(cache=True, parallel=True, boundscheck=False)
+def _scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2,
+                           occurence):
+    """Parallel JIT prefilter: returns seeds with >=occurence strongholds
+    inside the (x1, z1)-(x2, z2) bounding box.  Biome-blind — biome filtering
+    is reapplied at Python level on the much smaller candidate list.
+
+    Reuses the same `_quasi_strongholds_jit` and `_grid_strongholds_jit`
+    helpers used by the per-seed Python wrappers, so MT19937 semantics are
+    bit-for-bit identical.  The batch parallelism comes from numba's
+    `prange` distributing seeds across threads.
+    """
+    n = seeds_end - seeds_start
+    is_hit = np.zeros(n, dtype=np.bool_)
+
+    GRID  = np.int64(STRONGHOLD_GRID_SIZE)
+    SCALE = GRID * np.int64(16)
+    MASK  = np.int64(0xffffffff)
+    occ   = np.int32(occurence)
+
+    bx1 = np.int64(x1); bx2 = np.int64(x2)
+    bz1 = np.int64(z1); bz2 = np.int64(z2)
+
+    gx_min = bx1 // SCALE - np.int64(1)
+    gx_max = bx2 // SCALE + np.int64(1)
+    gz_min = bz1 // SCALE - np.int64(1)
+    gz_max = bz2 // SCALE + np.int64(1)
+
+    for ii in nb.prange(n):
+        s32 = (np.int64(seeds_start) + np.int64(ii)) & MASK
+        found = np.int32(0)
+
+        q_chunks, q_count = _quasi_strongholds_jit(s32)
+        for qi in range(q_count):
+            sh_x = q_chunks[qi, 0] * np.int64(16) + np.int64(8)
+            sh_z = q_chunks[qi, 1] * np.int64(16) + np.int64(8)
+            if bx1 < sh_x < bx2 and bz1 < sh_z < bz2:
+                found += np.int32(1)
+                if found >= occ:
+                    break
+
+        if found < occ:
+            g_chunks, g_count = _grid_strongholds_jit(
+                s32, gx_min, gx_max, gz_min, gz_max
+            )
+            for gi in range(g_count):
+                sh_x = g_chunks[gi, 0] * np.int64(16) + np.int64(8)
+                sh_z = g_chunks[gi, 1] * np.int64(16) + np.int64(8)
+                if bx1 < sh_x < bx2 and bz1 < sh_z < bz2:
+                    found += np.int32(1)
+                    if found >= occ:
+                        break
+
+        if found >= occ:
+            is_hit[ii] = True
+
+    count = np.int64(0)
+    for ii in range(n):
+        if is_hit[ii]:
+            count += np.int64(1)
+    result = np.empty(count, dtype=np.int64)
+    ci = np.int64(0)
+    for ii in range(n):
+        if is_hit[ii]:
+            result[ci] = np.int64(seeds_start) + np.int64(ii)
+            ci += np.int64(1)
+    return result
+
+
+def scan_batch_stronghold(seeds_start, seeds_end, x1, z1, x2, z2, occurence):
+    """Python wrapper around the parallel stronghold batch prefilter."""
+    return _scan_batch_stronghold(
+        int(seeds_start), int(seeds_end),
+        int(x1), int(z1), int(x2), int(z2),
+        int(occurence),
+    )
