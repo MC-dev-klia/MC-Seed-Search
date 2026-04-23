@@ -2,7 +2,7 @@ entrypoint = "main.py"
 modules = ["python-3.10"]
 
 [nix]
-channel = "stable-23_05"
+channel = "stable-25_05"
 packages = ["SDL2", "SDL2_image", "SDL2_mixer", "SDL2_ttf", "cairo", "ffmpeg-full", "fontconfig", "freetype", "ghostscript", "glibcLocales", "gobject-introspection", "gtk3", "libcxx", "libjpeg", "libpng", "pkg-config", "portmidi", "qhull", "tcl", "tk"]
 
 [unitTest]
@@ -17,6 +17,7 @@ deploymentTarget = "cloudrun"
 
 [agent]
 expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
 
 [workflows]
 runButton = "Project"
