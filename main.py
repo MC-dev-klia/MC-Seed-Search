@@ -14,6 +14,7 @@ from structure import (
     classify_bastion_or_fortress,
     classify_portal_variant,
     find_strongholds_in_box,
+    _is_stronghold_valid_biome,
 )
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -482,17 +483,19 @@ def _classify_variant(seed32, struct_type, chunk_x, chunk_z, chunk_bx, chunk_bz,
     return None
 
 def _check_struct_positions(s32, c, biome_gen=None):
-    # Special handling for stronghold 
+    # Special handling for stronghold
     if c.get("struct_type") == "stronghold":
         # Stronghold: enumerate strongholds whose grid cells overlap the box.
-        # Apply seed to biome generator if provided
-        if biome_gen:
-            biome_gen.apply_seed(s32)
-
+        # NOTE: village-biome filtering is intentionally NOT done here. Biomes
+        # depend on the full 64-bit world seed, so applying the lower-32 s32
+        # to biome_gen would validate against the wrong biome map and would
+        # also bypass expansion-mode upper-32 variation. The biome eligibility
+        # check is performed later by `_check_stronghold_biomes`, after the
+        # appropriate full seed has been applied to biome_gen.
         positions = []
         strongholds = find_strongholds_in_box(
             s32, c["x1"], c["z1"], c["x2"], c["z2"],
-            biome_gen=biome_gen,
+            biome_gen=None,
         )
         found = 0
         for sh_x, sh_z in strongholds:
@@ -577,6 +580,28 @@ def _biome_passes(gen, pos, biomes, corner_check, offx, offy, error):
         ):
             return False, name
     return True, name
+
+
+def _check_stronghold_biomes(gen, struct_constraints, all_positions):
+    """Re-validate stronghold positions against village-biome eligibility using
+    the currently-applied biome generator seed. Returns True iff every
+    stronghold constraint still has at least its required `occurence` count of
+    valid (in-box) strongholds. Drops positions that fail the biome check from
+    `all_positions` in place so downstream emit/format sees only the survivors.
+    """
+    for i, c in enumerate(struct_constraints):
+        if c.get("struct_type") != "stronghold":
+            continue
+        kept = []
+        for entry in all_positions[i]:
+            (_qrxz, (sh_x, sh_z), in_box) = entry
+            if in_box and not _is_stronghold_valid_biome(gen, sh_x, sh_z):
+                continue
+            kept.append(entry)
+        all_positions[i] = kept
+        if sum(1 for _, _, ib in kept if ib) < c["occurence"]:
+            return False
+    return True
 
 
 def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
@@ -937,11 +962,28 @@ def seedsearch():
                     # Try the first N upper 32-bit values
                     s32_masked = s32 & MASK32
                     matched_for_seed = 0
+                    # Snapshot stronghold position lists so each `top` iteration
+                    # starts from the unfiltered candidate set (the validator
+                    # mutates all_positions in place).
+                    sh_snapshot = {
+                        i: list(all_positions[i])
+                        for i, c in enumerate(struct_constraints)
+                        if c.get("struct_type") == "stronghold"
+                    }
                     for top in range(expand_top_count):
                         full_seed = (top << 32) | s32_masked
                         if full_seed >= SIGN_BIT:
                             full_seed -= TWO64
                         biome_gen.apply_seed(full_seed)
+
+                        # Restore stronghold candidates for this iteration.
+                        for i, snap in sh_snapshot.items():
+                            all_positions[i] = list(snap)
+
+                        if not _check_stronghold_biomes(
+                            biome_gen, struct_constraints, all_positions,
+                        ):
+                            continue
 
                         ok, per_struct_biome, per_biome_names = _check_biomes(
                             biome_gen,
@@ -960,6 +1002,10 @@ def seedsearch():
 
                 else:
                     biome_gen.apply_seed(s32)
+                    if not _check_stronghold_biomes(
+                        biome_gen, struct_constraints, all_positions,
+                    ):
+                        continue
                     ok, per_struct_biome, per_biome_names = _check_biomes(
                         biome_gen,
                         struct_constraints, all_positions,
