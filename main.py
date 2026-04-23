@@ -531,60 +531,63 @@ def _check_struct_positions(s32, c, biome_gen=None):
         return positions, found
     
     # Standard structure handling
-    quadrants = c.get("specific_quadrants") or [(0, 0), (-1, 0), (0, -1), (-1, -1)]
+    # Cache hot dict lookups into locals — _check_struct_positions runs once
+    # per JIT hit (and per secondary constraint), so the dict probes add up.
+    quadrants       = c.get("specific_quadrants") or [(0, 0), (-1, 0), (0, -1), (-1, -1)]
+    spec_positions  = c.get("specific_positions")
+    spacing         = c["spacing"]
+    separation      = c["separation"]
+    salt            = c["salt"]
+    linear_sep      = c["linear_sep"]
+    offx            = c["offx"]
+    offy            = c["offy"]
+    x1              = c["x1"]
+    x2              = c["x2"]
+    z1              = c["z1"]
+    z2              = c["z2"]
+    struct_type     = c.get("struct_type")
+    variant_filter  = c.get("variant_filter")
+    variants_dict   = c["variants"]
+    has_variant     = struct_type is not None and variant_filter is not None
     positions = []
     found = 0
     for rx, rz in quadrants:
-        pos_spec = None
-        if c.get("specific_positions") and (rx, rz) in c["specific_positions"]:
-            pos_spec = c["specific_positions"][(rx, rz)]
+        pos_spec = spec_positions[(rx, rz)] if (spec_positions and (rx, rz) in spec_positions) else None
+
         if pos_spec is None:
             # Auto position for this quadrant
-            pos = getpos(s32, rx, rz,
-                         c["spacing"], c["separation"], c["salt"], c["linear_sep"],
-                         c["offx"], c["offy"])
+            pos = getpos(s32, rx, rz, spacing, separation, salt, linear_sep, offx, offy)
             bx, bz = pos
-            in_box = c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"]
-            # Classify variant if applicable
-            if in_box and c.get("struct_type"):
-                try:
-                    if c.get("variant_filter") is not None:
-                        chunk_x, chunk_z = bx >> 4, bz >> 4
-                        variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
-                        if not variant:
-                            in_box = False
-                        if variant != None:
-                            c["variants"][pos] = variant
-                except EOFError:
-                    print("Exception")
-                    pass  
-            positions.append(((rx, rz), pos, in_box))
-            if in_box:
-                found += 1
+            in_box = x1 < bx < x2 and z1 < bz < z2
 
         elif isinstance(pos_spec, tuple) and len(pos_spec) == 4:
             # Range: x1,z1,x2,z2 (inclusive)
-            pos = getpos(s32, rx, rz,
-                         c["spacing"], c["separation"], c["salt"], c["linear_sep"],
-                         c["offx"], c["offy"])
+            pos = getpos(s32, rx, rz, spacing, separation, salt, linear_sep, offx, offy)
             bx, bz = pos
-            in_range = pos_spec[0] <= bx <= pos_spec[2] and pos_spec[1] <= bz <= pos_spec[3]
-            in_box = in_range and (c["x1"] < bx < c["x2"] and c["z1"] < bz < c["z2"])
-            # Classify variant if applicable
-            if in_box and c.get("struct_type"):
-                try:
-                    if c.get("variant_filter") is not None:
-                        chunk_x, chunk_z = bx >> 4, bz >> 4
-                        variant = _classify_variant(s32, c["struct_type"], chunk_x, chunk_z, bx, bz, c["spacing"], c.get("variant_filter"))
-                        if not variant:
-                            in_box = False 
-                        if variant != None:
-                            c["variants"][pos] = variant
-                except EOFError:
-                    pass
-            positions.append(((rx, rz), pos, in_box))
-            if in_box:
-                found += 1
+            in_box = (
+                pos_spec[0] <= bx <= pos_spec[2]
+                and pos_spec[1] <= bz <= pos_spec[3]
+                and x1 < bx < x2 and z1 < bz < z2
+            )
+        else:
+            continue
+
+        # Classify variant if applicable
+        if in_box and has_variant:
+            try:
+                variant = _classify_variant(
+                    s32, struct_type, bx >> 4, bz >> 4, bx, bz, spacing, variant_filter,
+                )
+                if not variant:
+                    in_box = False
+                else:
+                    variants_dict[pos] = variant
+            except EOFError:
+                pass
+
+        positions.append(((rx, rz), pos, in_box))
+        if in_box:
+            found += 1
 
     return positions, found
 
@@ -600,6 +603,12 @@ def _biome_at(gen, bx, bz, scale, by=64):
     """Look up biome id at world block (bx, bz, by) using the requested cubiomes
     scale. Lower scale = more accurate & slower; higher scale = coarser/faster."""
     sh = _scale_shift(scale)
+    return gen.get_biome(bx >> sh, by >> sh, bz >> sh, scale=scale)
+
+
+def _biome_at_shift(gen, bx, bz, scale, sh, by=64):
+    """Same as `_biome_at` but with a precomputed `sh = log2(scale)` to skip
+    the dict lookup inside hot per-sample loops."""
     return gen.get_biome(bx >> sh, by >> sh, bz >> sh, scale=scale)
 
 
@@ -619,7 +628,8 @@ def _biome_passes(gen, pos, biomes, corner_check, offx, offy,
     slowest, 64 is coarsest but fastest. 4 matches the prior default.
     """
     bx, bz = pos
-    bid  = _biome_at(gen, bx, bz, scale)
+    sh   = _scale_shift(scale)
+    bid  = _biome_at_shift(gen, bx, bz, scale, sh)
     name = gen.biome_name(bid)
     if bid not in biomes:
         return False, name                  # fast exit
@@ -627,11 +637,13 @@ def _biome_passes(gen, pos, biomes, corner_check, offx, offy,
         cx0 = bx - offx
         cz0 = bz - offy
         if sampling_chunks <= 0:
+            cx1 = cx0 + error
+            cz1 = cz0 + error
             if not (
-                _biome_at(gen, cx0,         cz0,         scale) in biomes
-                and _biome_at(gen, cx0 + error, cz0,         scale) in biomes
-                and _biome_at(gen, cx0,         cz0 + error, scale) in biomes
-                and _biome_at(gen, cx0 + error, cz0 + error, scale) in biomes
+                _biome_at_shift(gen, cx0, cz0, scale, sh) in biomes
+                and _biome_at_shift(gen, cx1, cz0, scale, sh) in biomes
+                and _biome_at_shift(gen, cx0, cz1, scale, sh) in biomes
+                and _biome_at_shift(gen, cx1, cz1, scale, sh) in biomes
             ):
                 return False, name
         else:
@@ -640,14 +652,14 @@ def _biome_passes(gen, pos, biomes, corner_check, offx, offy,
             # stepping every `step` blocks. Always includes the far edge so the
             # corners are still sampled even when error % step != 0.
             xs = list(range(cx0, cx0 + error, step))
-            if xs[-1] != cx0 + error:
+            if not xs or xs[-1] != cx0 + error:
                 xs.append(cx0 + error)
             zs = list(range(cz0, cz0 + error, step))
-            if zs[-1] != cz0 + error:
+            if not zs or zs[-1] != cz0 + error:
                 zs.append(cz0 + error)
             for x in xs:
                 for z in zs:
-                    if _biome_at(gen, x, z, scale) not in biomes:
+                    if _biome_at_shift(gen, x, z, scale, sh) not in biomes:
                         return False, name
     return True, name
 
@@ -675,14 +687,33 @@ def _check_stronghold_biomes(gen, struct_constraints, all_positions):
 
 
 def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
+    # Test fixed-coordinate biome point constraints first: each is a single
+    # block lookup and they tend to be far more selective than the per-quadrant
+    # corner sweeps, so failing fast here saves all the per-quadrant work.
+    per_biome = []
+    for bc in biome_constraints:
+        bid  = gen.biome_at_block(bc["x"], bc["z"], bc["y"])
+        if bid not in bc["allowed"]:
+            return False, None, None
+        per_biome.append(gen.biome_name(bid))
+
     per_struct = []
     for i, c in enumerate(struct_constraints):
-        if not c.get("quadrant_biomes"):
+        quadrant_biomes = c.get("quadrant_biomes")
+        if not quadrant_biomes:
             per_struct.append(None)
             continue
 
         pos_list  = all_positions[i]
         n_in_box  = sum(1 for _, _, ib in pos_list if ib)
+        occurence = c["occurence"]
+        corner    = c["corner_check"]
+        offx      = c["offx"]
+        offy      = c["offy"]
+        error     = c.get("error", 16)
+        sampling  = c.get("sampling_chunks", 0)
+        scale     = c.get("accuracy_scale", 4)
+
         found     = 0
         pos_biome = {}
         seen      = 0
@@ -690,7 +721,7 @@ def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
         for quad, pos, in_box in pos_list:
             if not in_box:
                 continue
-            biomes = c["quadrant_biomes"].get(quad)
+            biomes = quadrant_biomes.get(quad)
             if biomes is None:
                 # No biome check for this quadrant
                 pos_biome[pos] = "no_check"
@@ -698,31 +729,20 @@ def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
                 seen += 1
                 continue
             ok, name = _biome_passes(
-                gen, pos, biomes, c["corner_check"],
-                c["offx"], c["offy"],
-                c.get("error", 16),
-                sampling_chunks=c.get("sampling_chunks", 0),
-                scale=c.get("accuracy_scale", 4),
+                gen, pos, biomes, corner, offx, offy, error,
+                sampling_chunks=sampling, scale=scale,
             )
             pos_biome[pos] = name
             if ok:
                 found += 1
             # Early exit: remaining positions cannot make up the difference
-            if found + (n_in_box - seen - 1) < c["occurence"]:
+            if found + (n_in_box - seen - 1) < occurence:
                 return False, None, None
             seen += 1
 
-        if found < c["occurence"]:
+        if found < occurence:
             return False, None, None
         per_struct.append(pos_biome)
-
-    per_biome = []
-    for bc in biome_constraints:
-        bid  = gen.biome_at_block(bc["x"], bc["z"], bc["y"])
-        name = gen.biome_name(bid)
-        if bid not in bc["allowed"]:
-            return False, None, None
-        per_biome.append(name)
 
     return True, per_struct, per_biome
 
@@ -1071,11 +1091,14 @@ def seedsearch():
                     # Try the first N upper 32-bit values
                     s32_masked = s32 & MASK32
                     matched_for_seed = 0
-                    # Snapshot stronghold position lists so each `top` iteration
-                    # starts from the unfiltered candidate set (the validator
-                    # mutates all_positions in place).
+                    # Snapshot stronghold position lists so each `top`
+                    # iteration starts from the unfiltered candidate set.
+                    # The stronghold validator reassigns `all_positions[i]`
+                    # with a new list and never mutates the original, so we
+                    # safely reuse the same reference across iterations
+                    # without an extra per-iteration copy.
                     sh_snapshot = {
-                        i: list(all_positions[i])
+                        i: all_positions[i]
                         for i, c in enumerate(struct_constraints)
                         if c.get("struct_type") == "stronghold"
                     }
@@ -1087,7 +1110,7 @@ def seedsearch():
 
                         # Restore stronghold candidates for this iteration.
                         for i, snap in sh_snapshot.items():
-                            all_positions[i] = list(snap)
+                            all_positions[i] = snap
 
                         if not _check_stronghold_biomes(
                             biome_gen, struct_constraints, all_positions,
