@@ -6,6 +6,8 @@ main.py — Seed search loop with layered constraints, bounding-box bounds,
 import sys
 import time
 import re
+import os
+import numba as nb
 import biome as bm
 from structure import (
     getpos,
@@ -864,6 +866,33 @@ def seedsearch():
             if expand_stop_on_matches < 0:
                 expand_stop_on_matches = 0
         print("  Expansion mode ON." if expand_mode else "  Expansion mode OFF.")
+
+    # ---- parallelism --------------------------------------------------------
+    max_threads = nb.get_num_threads()
+    cpu_count = os.cpu_count() or max_threads
+    print()
+    raw_threads = input(
+        f"Number of threads for parallel scan kernels "
+        f"(1..{max_threads}, detected CPUs={cpu_count}) [{max_threads}]: "
+    ).strip()
+    if raw_threads:
+        try:
+            n_threads = int(raw_threads)
+        except ValueError:
+            print(f"  Invalid value, using {max_threads}.")
+            n_threads = max_threads
+    else:
+        n_threads = max_threads
+    if n_threads < 1:
+        n_threads = 1
+    if n_threads > max_threads:
+        print(
+            f"  Requested {n_threads} threads exceeds numba's maximum "
+            f"({max_threads}); clamping."
+        )
+        n_threads = max_threads
+    nb.set_num_threads(n_threads)
+    print(f"  Using {n_threads} thread(s) for scan kernels.")
 
     # ---- biome generator ---------------------------------------------------
     biome_gen = None
