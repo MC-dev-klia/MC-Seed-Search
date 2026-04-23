@@ -349,6 +349,9 @@ def _prompt_structure_constraint(idx):
             for rx, rz in [(0,0), (-1,0), (0,-1), (-1,-1)]:
                 quadrant_biomes[(rx, rz)] = biomes
 
+    error = 16
+    sampling_chunks = 0  # 0 -> corners-only (legacy behaviour)
+    accuracy_scale = 4   # cubiomes scale: 1=block-exact, 4=default, 16/64=coarse
     if needs_biome_gen:
         ans = input(
             "  4-corner biome check? (y/n) [n]"
@@ -356,7 +359,25 @@ def _prompt_structure_constraint(idx):
         corner_check = ans in ("y", "yes")
         print("    4-corner check ON." if corner_check else "    4-corner check OFF.")
         if corner_check:
-            Error=int(input("    Error margin for corner check [16]: ").strip() or "16")
+            error = int(input("    Error margin for corner check (blocks) [16]: ").strip() or "16")
+            raw_acc = input(
+                "    Biome accuracy scale 1/4/16/64 — lower = more accurate & slower [4]: "
+            ).strip()
+            accuracy_scale = int(raw_acc) if raw_acc else 4
+            if accuracy_scale not in (1, 4, 16, 64):
+                print(f"      Invalid scale {accuracy_scale}, falling back to 4.")
+                accuracy_scale = 4
+            raw_freq = input(
+                "    Sampling step in chunks across the error area "
+                "(0 = corners only) [0]: "
+            ).strip()
+            sampling_chunks = int(raw_freq) if raw_freq else 0
+            if sampling_chunks < 0:
+                sampling_chunks = 0
+            print(
+                f"      accuracy_scale={accuracy_scale}  "
+                f"sampling_chunks={sampling_chunks}  error={error}"
+            )
 
     return {
         "type":        "structure",
@@ -373,6 +394,9 @@ def _prompt_structure_constraint(idx):
         "offy":        offy,
         "quadrant_biomes": quadrant_biomes,
         "corner_check": corner_check,
+        "error":           error,
+        "sampling_chunks": sampling_chunks,
+        "accuracy_scale":  accuracy_scale,
         "specific_quadrants": specific_quadrants,
         "specific_positions": specific_positions,
         "variants":    {},  # Will store (pos) -> variant_info mappings
@@ -563,22 +587,66 @@ def _check_struct_positions(s32, c, biome_gen=None):
     return positions, found
 
 
-def _biome_passes(gen, pos, biomes, corner_check, offx, offy, error):
+def _scale_shift(scale):
+    """Return the right-shift count to convert block coords to cubiomes scale-N
+    coordinates. cubiomes scales are powers of 4 (1, 4, 16, 64); the shift is
+    log2(scale)."""
+    return {1: 0, 4: 2, 16: 4, 64: 6}.get(scale, 2)
+
+
+def _biome_at(gen, bx, bz, scale, by=64):
+    """Look up biome id at world block (bx, bz, by) using the requested cubiomes
+    scale. Lower scale = more accurate & slower; higher scale = coarser/faster."""
+    sh = _scale_shift(scale)
+    return gen.get_biome(bx >> sh, by >> sh, bz >> sh, scale=scale)
+
+
+def _biome_passes(gen, pos, biomes, corner_check, offx, offy,
+                  error, sampling_chunks=0, scale=4):
+    """Check biome eligibility around a structure.
+
+    Always tests the structure's own block. When `corner_check` is on, also
+    tests samples across an `error`x`error` block area centred at
+    `(bx - offx, bz - offy)`:
+        * `sampling_chunks == 0` → legacy behaviour: just the four corners.
+        * `sampling_chunks  > 0` → grid samples every `sampling_chunks * 16`
+          blocks across the full area, including all corners and interior
+          points. This catches biome-edge false positives the corners miss.
+
+    `scale` is the cubiomes biome scale (1/4/16/64); 1 is most accurate but
+    slowest, 64 is coarsest but fastest. 4 matches the prior default.
+    """
     bx, bz = pos
-    bid  = gen.biome_at_block(bx, bz)
+    bid  = _biome_at(gen, bx, bz, scale)
     name = gen.biome_name(bid)
     if bid not in biomes:
         return False, name                  # fast exit
     if corner_check:
         cx0 = bx - offx
         cz0 = bz - offy
-        if not (
-            gen.biome_at_block(cx0,      cz0)      in biomes
-            and gen.biome_at_block(cx0 + error, cz0)      in biomes
-            and gen.biome_at_block(cx0,      cz0 + error) in biomes
-            and gen.biome_at_block(cx0 + error, cz0 + error) in biomes
-        ):
-            return False, name
+        if sampling_chunks <= 0:
+            if not (
+                _biome_at(gen, cx0,         cz0,         scale) in biomes
+                and _biome_at(gen, cx0 + error, cz0,         scale) in biomes
+                and _biome_at(gen, cx0,         cz0 + error, scale) in biomes
+                and _biome_at(gen, cx0 + error, cz0 + error, scale) in biomes
+            ):
+                return False, name
+        else:
+            step = sampling_chunks * 16
+            # Grid sweep from (cx0, cz0) to (cx0+error, cz0+error) inclusive,
+            # stepping every `step` blocks. Always includes the far edge so the
+            # corners are still sampled even when error % step != 0.
+            xs = list(range(cx0, cx0 + error, step))
+            if xs[-1] != cx0 + error:
+                xs.append(cx0 + error)
+            zs = list(range(cz0, cz0 + error, step))
+            if zs[-1] != cz0 + error:
+                zs.append(cz0 + error)
+            for x in xs:
+                for z in zs:
+                    if _biome_at(gen, x, z, scale) not in biomes:
+                        return False, name
     return True, name
 
 
@@ -627,8 +695,13 @@ def _check_biomes(gen, struct_constraints, all_positions, biome_constraints):
                 found += 1
                 seen += 1
                 continue
-            ok, name = _biome_passes(gen, pos, biomes, c["corner_check"],
-                                     c["offx"], c["offy"], Error)
+            ok, name = _biome_passes(
+                gen, pos, biomes, c["corner_check"],
+                c["offx"], c["offy"],
+                c.get("error", 16),
+                sampling_chunks=c.get("sampling_chunks", 0),
+                scale=c.get("accuracy_scale", 4),
+            )
             pos_biome[pos] = name
             if ok:
                 found += 1
@@ -836,9 +909,16 @@ def seedsearch():
                     labels = ", ".join(
                         bm.BIOME_NAMES.get(b, str(b)) for b in sorted(biomes)
                     )
+                    extra = ""
+                    if c.get("corner_check"):
+                        extra = (
+                            f"  error={c.get('error', 16)}"
+                            f"  sampling_chunks={c.get('sampling_chunks', 0)}"
+                            f"  accuracy_scale={c.get('accuracy_scale', 4)}"
+                        )
                     hdr_lines.append(
                         f"#   Biome filter for {quad}: [{labels}]"
-                        f"  corner_check={c['corner_check']}"
+                        f"  corner_check={c['corner_check']}{extra}"
                     )
     for bc in biome_constraints:
         labels = ", ".join(
